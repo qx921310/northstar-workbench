@@ -1,0 +1,234 @@
+import { useEffect, useState } from "react";
+import { desktopApi, getDesktopContext, type CustomService, type DesktopContext, type GmailSetup, type MailAccount, type MailMessage, type ObsidianNote, type ObsidianTask, type ServiceStatus, type SidebarCounts } from "./desktop";
+import { version as browserVersion } from "../package.json";
+import type { Update } from "@tauri-apps/plugin-updater";
+
+type Page = "home" | "tasks" | "trending" | "agents" | "notes" | "inbox" | "services";
+
+type Repository = {
+  id: number;
+  full_name: string;
+  description: string | null;
+  html_url: string;
+  language: string | null;
+  stargazers_count: number;
+};
+
+const nav: { id: Page; label: string }[] = [
+  { id: "home", label: "首页" },
+  { id: "tasks", label: "待办" },
+  { id: "trending", label: "热点" },
+  { id: "agents", label: "我的 Agent" },
+  { id: "notes", label: "笔记" },
+  { id: "inbox", label: "收件箱" },
+  { id: "services", label: "我的服务" },
+];
+
+function currentGreeting(hour: number, hasAlert: boolean) {
+  if (hour >= 22 || hour < 6) {
+    return hasAlert
+      ? { eyebrow: "夜间 · 新加坡", title: "晚上好，这么晚了还没休息。", body: "刚刚检测到一项服务需要你的注意，花一分钟看一下就好。", action: "去查看", target: "services" as Page, icon: "!", kind: "alert" }
+      : { eyebrow: "夜间", title: "晚上好，放慢一点。", body: "今天辛苦了，想记录什么都可以写进笔记。", action: "打开笔记", target: "notes" as Page, icon: "☾", kind: "calm" };
+  }
+  if (hour < 12) return { eyebrow: "上午", title: "早安，开启新的一天。", body: "不妨先看看开发者们正在关注什么，再决定今天的第一件事。", action: "看热点", target: "trending" as Page, icon: "☀", kind: "calm" };
+  return { eyebrow: "下午", title: "下午好，保持节奏。", body: "看看待办，选择接下来最想专注的一件事。", action: "查看待办", target: "tasks" as Page, icon: "✓", kind: "calm" };
+}
+
+export default function App() {
+  const [page, setPage] = useState<Page>("home");
+  const [hasAlert, setHasAlert] = useState(false);
+  const [clock, setClock] = useState(() => new Date().getHours());
+  const [desktop, setDesktop] = useState<DesktopContext | null>(null);
+  const [sidebarCounts, setSidebarCounts] = useState<SidebarCounts | null>(null);
+  const [version, setVersion] = useState(browserVersion);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [updateState, setUpdateState] = useState("");
+
+  useEffect(() => { void getDesktopContext().then(setDesktop).catch(() => setDesktop(null)); }, []);
+  useEffect(() => {
+    if (!desktop) return;
+    let active = true;
+    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(value => { if (active) setVersion(value); }).catch(() => undefined);
+    void import("@tauri-apps/plugin-updater").then(({ check }) => check()).then(value => { if (active) setUpdate(value); else void value?.close(); }).catch(() => { if (active) setUpdateState("更新检查暂不可用"); });
+    return () => { active = false; };
+  }, [desktop]);
+  const installUpdate = async () => {
+    if (!update || updateState === "正在下载并安装更新…") return;
+    if (!window.confirm(`发现新版本 V${update.version}，现在下载并安装？应用将退出并重新启动。`)) return;
+    setUpdateState("正在下载并安装更新…");
+    try { await update.downloadAndInstall(); } catch (error) { setUpdateState(`更新失败：${error instanceof Error ? error.message : String(error)}`); }
+  };
+  useEffect(() => { if (desktop) void desktopApi.getSidebarCounts().then(setSidebarCounts).catch(() => setSidebarCounts(null)); }, [desktop]);
+  const badgeFor = (id: Page) => id === "tasks" ? sidebarCounts?.openTasks : id === "inbox" ? sidebarCounts?.unreadMail : id === "agents" ? desktop?.agents.filter(agent => agent.installed).length : undefined;
+
+  return <div className={`app-shell ${clock >= 22 || clock < 6 ? "night" : ""}`}>
+    <header className="titlebar"><div className="brand"><span>✦</span>Northstar</div><div className="title-actions"><button onClick={() => setClock(clock >= 22 ? 9 : 23)} aria-label="切换预览时间">{clock >= 22 ? "日间预览" : "夜间预览"}</button><button onClick={() => setHasAlert(!hasAlert)} aria-label="切换服务告警">{hasAlert ? "告警预览开启" : "告警预览关闭"}</button></div></header>
+    <div className="workspace">
+      <aside className="sidebar"><nav aria-label="主导航">{nav.map(item => { const badge = badgeFor(item.id); const icons: Record<Page, string> = { home: "⌂", tasks: "✓", trending: "⌁", agents: "✦", notes: "▤", inbox: "✉", services: "◎" }; return <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><span className="dock-icon" aria-hidden="true">{icons[item.id]}</span><span className="dock-label">{item.label}</span>{badge !== undefined && badge > 0 && <small className="nav-badge">{badge > 99 ? "99+" : badge}</small>}</button>; })}</nav></aside>
+      <main>{page === "home" ? <Home clock={clock} previewAlert={hasAlert} onNavigate={setPage} desktop={desktop} unreadMail={sidebarCounts?.unreadMail} /> : page === "trending" ? <TrendingPage onNavigate={setPage} /> : page === "tasks" ? <TasksPage onNavigate={setPage} desktop={desktop} /> : page === "notes" ? <NotesPage onNavigate={setPage} desktop={desktop} /> : page === "inbox" ? <InboxPage onNavigate={setPage} desktop={desktop} /> : page === "services" ? <ServicesPage onNavigate={setPage} desktop={desktop} /> : <PageContent page={page} onNavigate={setPage} desktop={desktop} />}</main>
+    </div>{page === "home" && <div className="version-indicator"><span>V{version}</span>{update && <button onClick={() => void installUpdate()} aria-label={`更新至版本 ${update.version}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>}
+  </div>;
+}
+
+function Home({ clock, previewAlert, onNavigate, desktop, unreadMail }: { clock: number; previewAlert: boolean; onNavigate: (page: Page) => void; desktop: DesktopContext | null; unreadMail?: number }) {
+  const [pending, setPending] = useState<number | null>(null);
+  const [todayReminders, setTodayReminders] = useState(0);
+  const [serviceAlert, setServiceAlert] = useState<string | null>(null);
+  const [serviceCount, setServiceCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!desktop) return;
+    let active = true;
+    void desktopApi.listTasks().then(tasks => {
+      if (!active) return;
+      const today = new Date().toISOString().slice(0, 10);
+      setPending(tasks.filter(task => !task.completed).length);
+      setTodayReminders(tasks.filter(task => !task.completed && task.reminderAt?.startsWith(today)).length);
+    }).catch(() => undefined);
+    void desktopApi.listServices().then(services => {
+      if (!active) return;
+      setServiceCount(services.length);
+      const unhealthy = services.find(service => !service.reachable || service.checks.some(check => !check.healthy));
+      setServiceAlert(unhealthy ? `${unhealthy.name} ${unhealthy.reachable ? "有服务异常" : "暂时不可达"}` : null);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [desktop]);
+  const hasAlert = serviceAlert !== null || previewAlert;
+  const greeting = currentGreeting(clock, hasAlert);
+  return <section className="home"><div className="home-intro"><p className="eyebrow">{greeting.eyebrow} · Northstar</p><h1>{greeting.title}</h1><p className="lead">{greeting.body}</p></div><div className="home-stack"><button className="space-card" onClick={() => onNavigate("trending")}><i>⌁</i><b>今日热点</b><span>看看开发者们正在关注什么</span><em>查看热点 →</em></button><button className="space-card" onClick={() => onNavigate("tasks")}><i>✓</i><b>我的待办</b><span>{pending === null ? (desktop ? "正在读取待办…" : "桌面版可读取待办") : pending ? `${pending} 项待办${todayReminders ? ` · ${todayReminders} 项今天提醒` : ""}` : "暂无待办"}</span><em>打开待办 →</em></button><button className="space-card" onClick={() => onNavigate("inbox")}><i>✉</i><b>收件箱</b><span>{!desktop ? "桌面版可查看邮件" : unreadMail === undefined ? "正在读取邮件状态…" : unreadMail > 0 ? `${unreadMail} 封未读邮件` : "查看你的邮件"}</span><em>打开收件箱 →</em></button><button className={`space-card${hasAlert ? " alert" : ""}`} onClick={() => onNavigate("services")}><i>⌁</i><b>我的服务</b><span>{serviceAlert || (previewAlert ? "服务告警预览已开启" : serviceCount === null ? (desktop ? "正在探测服务…" : "桌面版可查看服务") : serviceCount ? `${serviceCount} 项服务运行正常` : "尚未登记服务")}</span><em>查看服务 →</em></button></div></section>;
+}
+
+function DesktopRequired({ desktop }: { desktop: DesktopContext | null }) {
+  return desktop ? null : <div className="empty-state"><b>此功能需要 Windows 桌面版</b><p>浏览器预览无法访问本机 Obsidian Vault。</p></div>;
+}
+
+function TasksPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+  const [tasks, setTasks] = useState<ObsidianTask[]>([]);
+  const [title, setTitle] = useState("");
+  const [details, setDetails] = useState("");
+  const [editing, setEditing] = useState<ObsidianTask | null>(null);
+  const [remind, setRemind] = useState(false); const [reminderAt, setReminderAt] = useState("");
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(Boolean(desktop));
+  const load = async () => {
+    if (!desktop) return;
+    setLoading(true); setError("");
+    try { setTasks(await desktopApi.listTasks()); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取待办"); } finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, [desktop]);
+  const add = async () => {
+    if (!title.trim()) return;
+    if (remind && (!reminderAt || new Date(reminderAt).getTime() <= Date.now())) { setError("请选择当前之后的提醒时间并确认"); return; }
+    try { if (editing) await desktopApi.changeTask(editing, title, details, remind ? reminderAt : undefined); else await desktopApi.createTask(title, details, remind ? reminderAt : undefined); setTitle(""); setDetails(""); setEditing(null); setRemind(false); setReminderAt(""); setError(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法保存待办"); }
+  };
+  const toggle = async (task: ObsidianTask) => {
+    try { await desktopApi.setTaskCompletion(task.file, task.line, !task.completed); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法更新待办"); }
+  };
+  const edit = (task: ObsidianTask) => { setEditing(task); setTitle(task.title); setDetails(task.details); setRemind(Boolean(task.reminderAt)); setReminderAt(task.reminderAt || ""); setCreating(true); };
+  const remove = async (task: ObsidianTask) => { if (!window.confirm(`删除“${task.title}”？此操作会修改 Obsidian 中的待办文件。`)) return; try { await desktopApi.changeTask(task); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法删除待办"); } };
+  const open = tasks.filter(task => !task.completed); const done = tasks.filter(task => task.completed);
+  return <section className="module tasks-module"><div className="module-top"><button className="back" onClick={() => onNavigate("home")}>← 返回首页</button><span>OBSIDIAN · TASKS</span></div><h1>我的待办</h1><p className="lead">把想做的事放在这里，一件一件来。</p><DesktopRequired desktop={desktop} />{desktop && <><div className="tasks-board"><TaskGroup title="进行中" tasks={open} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><TaskGroup title="已完成" tasks={done} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><section className="task-group task-new"><h2>{editing ? "编辑待办" : "新增待办"}</h2>{creating ? <div className="task-form"><label>标题<input value={title} onChange={event => setTitle(event.target.value)} placeholder="待办标题" /></label><label>事项<textarea value={details} onChange={event => setDetails(event.target.value)} placeholder="补充事项内容" /></label><div className="task-form-actions"><label><input type="checkbox" checked={remind} onChange={event => { setRemind(event.target.checked); setReminderAt(""); }} /> 是否提醒</label><button className="primary" onClick={() => void add()}>{editing ? "保存修改" : "确认创建"}</button></div>{remind && <ReminderPicker value={reminderAt} onChange={setReminderAt} />}</div> : <button className="task-add" onClick={() => setCreating(true)}><span>＋</span>添加一件事</button>}</section></div>{error && <p className="inline-error">{error}</p>}</>}</section>;
+}
+
+function TaskGroup({ title, tasks, loading, onToggle, onEdit, onDelete }: { title: string; tasks: ObsidianTask[]; loading: boolean; onToggle: (task: ObsidianTask) => void; onEdit: (task: ObsidianTask) => void; onDelete: (task: ObsidianTask) => void }) {
+  return <section className="task-group"><h2>{title}{tasks.length > 0 && <small>{tasks.length}</small>}</h2><div className="module-list">{loading ? <div className="task-row">正在读取 Obsidian 待办…</div> : tasks.length === 0 ? <div className="task-row muted">暂无任务</div> : tasks.map(task => <div className="task-row" key={task.id}><input aria-label={`完成 ${task.title}`} type="checkbox" checked={task.completed} onChange={() => void onToggle(task)} /><span><b>{task.title}</b>{task.details && <small>{task.details}</small>}<small>{task.reminderAt ? `提醒 · ${task.reminderAt.replace("T", " ")} · ` : ""}{task.file}</small>{task.file.replaceAll("\\", "/") === "待办事项/Northstar.md" && <small><button onClick={() => onEdit(task)}>编辑</button> · <button onClick={() => void onDelete(task)}>删除</button></small>}</span></div>)}</div></section>;
+}
+
+function ReminderPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [date, setDate] = useState(value.slice(0, 10)); const [time, setTime] = useState(value.slice(11) || "09:00"); const [error, setError] = useState("");
+  const now = new Date(); const localToday = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const confirm = () => { const candidate = `${date}T${time}`; if (!date || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(candidate) || new Date(candidate).getTime() <= Date.now()) { setError("请选择当前之后的有效日期和时间"); return; } setError(""); onChange(candidate); };
+  return <div className="reminder-picker"><label>日期<input type="date" min={localToday} max="9999-12-31" value={date} onChange={e => { const next = e.target.value; if (next && !/^\d{4}-\d{2}-\d{2}$/.test(next)) { e.target.value = date; return; } setDate(next); onChange(""); }} /></label><label>时间<input type="time" value={time} onChange={e => { setTime(e.target.value); onChange(""); }} /></label><button type="button" onClick={confirm}>确认时间</button>{value && <small>已确认 {value.replace("T", " ")}</small>}{error && <small className="inline-error">{error}</small>}</div>;
+}
+
+function NotesPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+  const [notes, setNotes] = useState<ObsidianNote[]>([]); const [query, setQuery] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(Boolean(desktop));
+  const search = async (value = query) => { if (!desktop) return; setLoading(true); setError(""); try { setNotes(await desktopApi.listNotes(value)); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法查询笔记"); } finally { setLoading(false); } };
+  useEffect(() => { void search(""); }, [desktop]);
+  const createNote = async () => { const title = window.prompt("新笔记名称"); if (!title) return; try { const note = await desktopApi.createNote("", title); setNotes(current => [note, ...current]); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法创建笔记"); } };
+  const createDirectory = async () => { const path = window.prompt("新目录名称（相对于 Vault 根目录）"); if (!path) return; try { await desktopApi.createDirectory(path); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法创建目录"); } };
+  return <section className="module"><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">Obsidian Vault</p><h1>我的笔记</h1><p className="lead">笔记仍以 Vault 为真源；这里用于快速创建、检索和跳转。</p><DesktopRequired desktop={desktop} />{desktop && <><div className="note-actions"><button onClick={() => void createDirectory()}>新建目录</button><button onClick={() => void createNote()}>新建笔记</button><button onClick={() => { window.location.href = "obsidian://open?vault=ObsidianVault"; }}>跳转 Obsidian</button></div><div className="task-create"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === "Enter" && void search()} placeholder="查询笔记" /><button className="primary" onClick={() => void search()}>查询笔记</button></div>{error && <p className="inline-error">{error}</p>}<div className="module-list note-list">{loading ? <div className="task-row">正在索引 Vault…</div> : notes.map(note => <article className="note-row" key={note.file}><div><b>{note.title}</b><p>{note.preview}</p><small>{note.file}</small></div></article>)}</div></>}</section>;
+}
+
+function TrendingPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [resultPage, setResultPage] = useState(0);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [updatedAt, setUpdatedAt] = useState("");
+
+  const loadTrending = async () => {
+    setStatus("loading");
+    const after = new Date();
+    after.setDate(after.getDate() - 30);
+    const createdAfter = after.toISOString().slice(0, 10);
+    try {
+      const response = await fetch(`https://api.github.com/search/repositories?q=created:%3E${createdAfter}&sort=stars&order=desc&per_page=10`, {
+        headers: { Accept: "application/vnd.github+json" },
+      });
+      if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+      const payload = await response.json() as { items: Repository[] };
+      setRepositories(payload.items);
+      setResultPage(0);
+      setUpdatedAt(new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date()));
+      setStatus("ready");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  useEffect(() => { void loadTrending(); }, []);
+
+  return <section className="module trending"><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">GitHub API · 近 30 天创建仓库</p><div className="module-heading"><div><h1>GitHub 热点</h1><p className="lead">基于公开 API 的近期仓库排行榜。</p></div><button className="refresh" onClick={() => void loadTrending()} disabled={status === "loading"}>{status === "loading" ? "加载中…" : "刷新"}</button></div>{status === "error" ? <div className="empty-state"><b>暂时无法连接 GitHub</b><p>请检查网络，稍后再次刷新。</p><button className="primary" onClick={() => void loadTrending()}>重试</button></div> : <div className="repository-list" aria-live="polite">{status === "loading" && Array.from({ length: 4 }).map((_, index) => <div className="repository skeleton" key={index}><span></span><div><b></b><p></p></div></div>)}{status === "ready" && repositories.slice(resultPage * 4, resultPage * 4 + 4).map((repository, index) => <article className="repository" key={repository.id}><span className="rank">{resultPage * 4 + index + 1}</span><div><a href={repository.html_url} target="_blank" rel="noreferrer">{repository.full_name}</a><p>{repository.description || "暂无项目描述"}</p><small>{repository.language || "未标记语言"} · ★ {repository.stargazers_count.toLocaleString()}</small></div><a className="repo-open" href={repository.html_url} target="_blank" rel="noreferrer">打开 ↗</a></article>)}{status === "ready" && <div className="pagination"><span>更新于 {updatedAt} · GitHub API</span><button disabled={resultPage === 0} onClick={() => setResultPage(resultPage - 1)}>上一页</button><span>{resultPage + 1} / {Math.max(1, Math.ceil(repositories.length / 4))}</span><button disabled={(resultPage + 1) * 4 >= repositories.length} onClick={() => setResultPage(resultPage + 1)}>下一页</button></div>}</div>}</section>;
+}
+
+const mailProviders: Array<{ id: MailAccount["provider"]; name: string; description: string }> = [
+  { id: "gmail", name: "Gmail", description: "Google OAuth · 标签与会话" },
+  { id: "outlook", name: "Outlook", description: "Microsoft OAuth · Outlook.com 与 Microsoft 365" },
+  { id: "qq", name: "QQ 邮箱", description: "IMAP · 使用独立授权码" },
+  { id: "imap", name: "其他 IMAP", description: "163、企业邮或自建邮箱" },
+];
+
+function InboxPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+  const [accounts, setAccounts] = useState<MailAccount[]>([]);
+  const [gmailSetup, setGmailSetup] = useState<GmailSetup | null>(null);
+  const [provider, setProvider] = useState<MailAccount["provider"]>("gmail");
+  const [address, setAddress] = useState(""); const [label, setLabel] = useState("");
+  const [clientId, setClientId] = useState(""); const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [messages, setMessages] = useState<MailMessage[]>([]); const [selectedMessage, setSelectedMessage] = useState<MailMessage | null>(null);
+  const [loading, setLoading] = useState(Boolean(desktop)); const [adding, setAdding] = useState(false); const [connecting, setConnecting] = useState(false); const [error, setError] = useState("");
+  const load = async () => { if (!desktop) return; setLoading(true); try { const [nextAccounts, setup] = await Promise.all([desktopApi.listMailAccounts(), desktopApi.getGmailSetup()]); setAccounts(nextAccounts); setGmailSetup(setup); const connected = nextAccounts.find(account => account.provider === "gmail" && account.connectionState === "connected"); if (connected) setSelectedAccountId(current => current || connected.id); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取邮箱账户"); } finally { setLoading(false); } };
+  useEffect(() => { void load(); }, [desktop]);
+  const register = async () => { if (!address.trim()) return; setAdding(true); setError(""); try { const account = await desktopApi.registerMailAccount(provider, address, label); setAccounts(current => [...current, account]); setAddress(""); setLabel(""); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法登记邮箱"); } finally { setAdding(false); } };
+  const connectGmail = async () => { setConnecting(true); setError(""); try { const account = await desktopApi.connectGmail(); setAccounts(current => [...current.filter(item => item.id !== account.id), account]); setSelectedAccountId(account.id); setSelectedMessage(null); setMessages([]); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法完成 Gmail 授权"); } finally { setConnecting(false); } };
+  const saveClientId = async () => { setError(""); try { setGmailSetup(await desktopApi.setGmailClientId(clientId)); setClientId(""); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法保存 Google OAuth Client ID"); } };
+  const loadMessages = async (accountId = selectedAccountId) => { if (!accountId) return; setLoading(true); setError(""); try { setMessages(await desktopApi.listMailMessages(accountId)); setSelectedMessage(null); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取邮件"); } finally { setLoading(false); } };
+  const openMessage = async (message: MailMessage) => { if (!selectedAccountId) return; setLoading(true); try { setSelectedMessage(await desktopApi.getMailMessage(selectedAccountId, message.id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取邮件正文"); } finally { setLoading(false); } };
+  const connectedGmail = accounts.filter(account => account.provider === "gmail" && account.connectionState === "connected");
+  return <section className="module inbox"><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">统一收件箱 · 本机优先</p><h1>我的收件箱</h1><p className="lead">Gmail 已支持授权、收件箱列表与正文阅读；其他邮箱会沿用同一阅读体验。</p><DesktopRequired desktop={desktop} />{desktop && <>{connectedGmail.length > 0 && <section className="mail-accounts">{connectedGmail.map(account => <article key={account.id} className={selectedAccountId === account.id ? "selected" : ""} onClick={() => { setSelectedAccountId(account.id); void loadMessages(account.id); }}><span className="status"></span><div><b>{account.label}</b><p>{account.address} · Gmail 已连接</p></div><small>读取收件箱 ›</small></article>)}</section>}<section className="mail-setup"><h2>添加邮箱</h2><div className="provider-picker">{mailProviders.map(item => <button key={item.id} className={provider === item.id ? "selected" : ""} onClick={() => setProvider(item.id)}><b>{item.name}</b><span>{item.description}</span></button>)}</div>{provider === "gmail" ? <div className="gmail-connect">{!gmailSetup?.configured ? <><p>先填入 Google Cloud 中“Desktop app”类型的 OAuth Client ID。该 ID 不属于密码或令牌。</p><div className="mail-fields"><input className="gmail-client-id" value={clientId} onChange={event => setClientId(event.target.value)} placeholder="123…apps.googleusercontent.com" /><button className="primary" onClick={() => void saveClientId()}>保存 Client ID</button></div></> : <><p>已配置 Google OAuth Client ID（{gmailSetup.clientIdHint}）。授权会在默认浏览器中打开，令牌仅保存至 Windows 凭据管理器。</p><button className="primary" disabled={connecting} onClick={() => void connectGmail()}>{connecting ? "等待浏览器授权…" : "连接 Gmail"}</button></>}</div> : <div className="mail-fields"><input type="email" value={address} onChange={event => setAddress(event.target.value)} placeholder="邮箱地址" /><input value={label} onChange={event => setLabel(event.target.value)} placeholder="显示名称（可选）" /><button className="primary" disabled={adding} onClick={() => void register()}>{adding ? "登记中…" : "登记账户"}</button></div>}{error && <p className="inline-error">{error}</p>}<p className="setup-note">Gmail 使用只读 OAuth（`gmail.readonly`）；不会保存密码。Outlook、QQ 与通用 IMAP 将在后续接入授权与同步。</p></section>{selectedAccountId && <section className="mail-reader">{selectedMessage ? <article className="message-detail"><button className="back" onClick={() => setSelectedMessage(null)}>‹ 返回列表</button><h2>{selectedMessage.subject || "（无主题）"}</h2><p className="message-meta">{selectedMessage.from} · {selectedMessage.date}</p><pre>{selectedMessage.body || selectedMessage.snippet || "此邮件没有可显示的纯文本正文。"}</pre></article> : <><div className="module-heading"><h2>收件箱</h2><button className="refresh" onClick={() => void loadMessages()} disabled={loading}>{loading ? "同步中…" : "刷新"}</button></div>{messages.length === 0 && !loading ? <div className="empty-state"><b>还没有读取邮件</b><p>点击已连接的 Gmail 账户，或使用刷新开始同步。</p></div> : <div className="message-list">{messages.map(message => <button key={message.id} onClick={() => void openMessage(message)}><b>{message.subject || "（无主题）"}</b><span>{message.from}</span><p>{message.snippet}</p><small>{message.date}</small></button>)}</div>}</>}</section>}{loading && <p className="updated">正在读取本机邮箱数据…</p>}{!loading && accounts.filter(account => account.connectionState !== "connected").length > 0 && <div className="empty-state"><b>待完成授权的账户</b><p>{accounts.filter(account => account.connectionState !== "connected").map(account => account.address).join("、")}</p></div>}</>}</section>;
+}
+
+function ServicesPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+  const [services, setServices] = useState<ServiceStatus[]>([]);
+  const [loading, setLoading] = useState(Boolean(desktop));
+  const [error, setError] = useState("");
+  const [updatedAt, setUpdatedAt] = useState("");
+  const [serviceName, setServiceName] = useState(""); const [serviceTarget, setServiceTarget] = useState(""); const [serviceKind, setServiceKind] = useState<CustomService["kind"]>("http"); const [adding, setAdding] = useState(false);
+  const load = async () => {
+    if (!desktop) return;
+    setLoading(true); setError("");
+    try { setServices(await desktopApi.listServices()); setUpdatedAt(new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "无法读取服务状态"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, [desktop]);
+  const addService = async () => { if (!serviceName.trim() || !serviceTarget.trim()) return; setAdding(true); setError(""); try { await desktopApi.registerCustomService(serviceName, serviceTarget, serviceKind); setServiceName(""); setServiceTarget(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法登记自定义服务"); } finally { setAdding(false); } };
+  const removeService = async (id: string) => { try { await desktopApi.removeCustomService(id); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法移除自定义服务"); } };
+  return <section className="module services"><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><div className="module-heading"><div><p className="eyebrow">DSH SSH + 自定义 HTTP / TCP · 只读探测</p><h1>我的服务</h1><p className="lead">自动读取 DSH 主机，也可挂载 API、控制面板或代理端口；所有探测均为只读。</p></div><button className="refresh" onClick={() => void load()} disabled={loading}>{loading ? "探测中…" : "刷新"}</button></div><DesktopRequired desktop={desktop} />{desktop && <><section className="service-setup"><h2>挂载服务</h2><div className="service-fields"><input value={serviceName} onChange={event => setServiceName(event.target.value)} placeholder="名称，例如：代理订阅" /><select value={serviceKind} onChange={event => setServiceKind(event.target.value as CustomService["kind"])}><option value="http">HTTP(S)</option><option value="tcp">TCP 端口</option></select><input value={serviceTarget} onChange={event => setServiceTarget(event.target.value)} onKeyDown={event => event.key === "Enter" && void addService()} placeholder={serviceKind === "http" ? "https://status.example.com/health" : "host.example.com:443"} /><button className="primary" disabled={adding} onClick={() => void addService()}>{adding ? "保存中…" : "挂载"}</button></div><p>HTTP(S) 以 2xx / 3xx 视为可用；TCP 使用主机:端口进行连接测试。</p></section>{error && <p className="inline-error">{error}</p>}<div className="service-list">{services.map(service => <article className="service-card" key={service.id}><div className="service-card-head"><span className={service.reachable ? "status" : "status warn"}></span><div><h2>{service.name}</h2><p>{service.description}</p></div><small>{service.reachable ? `${service.latencyMs ?? "—"} ms` : "不可达"}</small></div>{service.reachable ? <>{service.id.startsWith("custom-") ? <p className="service-custom-target">{service.hostname}</p> : <div className="service-metrics"><span><b>{service.hostname}</b>主机</span><span><b>{service.uptime}</b>在线时长</span><span><b>{service.load}</b>负载</span><span><b>{service.memory}</b>内存</span><span><b>{service.disk}</b>系统盘</span></div>}<div className="service-checks">{service.checks.map(check => <span key={check.name} className={check.healthy ? "healthy" : "warning"}>● {check.name} · {check.state}</span>)}</div></> : <p className="inline-error">{service.error || "探测失败"}</p>}{service.id.startsWith("custom-") && <button className="service-remove" onClick={() => void removeService(service.id)}>移除挂载</button>}</article>)}{!loading && services.length === 0 && !error && <div className="empty-state"><b>尚未发现服务</b><p>可在 DSH 中添加 SSH 主机，或手动挂载 HTTP / TCP 服务。</p></div>}</div>{updatedAt && <p className="updated service-updated">最近探测：{updatedAt}</p>}</>}</section>;
+}
+
+function PageContent({ page, onNavigate, desktop }: { page: Exclude<Page, "home" | "trending" | "tasks" | "notes" | "inbox" | "services">; onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const agents = desktop?.agents || [];
+  const agent = agents.find(item => item.name === selected);
+  return <section className="module"><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">Northstar · 本机发现</p><h1>我的 Agent</h1><p className="lead">DSH 默认置顶；Pi 与 Codex 随本机安装状态自动更新，卸载后仍可保留历史入口。</p><DesktopRequired desktop={desktop} />{desktop && <>{agent ? <article className="agent-detail"><button className="back" onClick={() => setSelected(null)}>‹ 返回 Agent 列表</button><div className="agent-detail-head"><span className={agent.installed ? "status" : "status warn"}></span><div><h2>{agent.name}</h2><p>{agent.installed ? "本机已发现，可直接作为工作流入口。" : "本机未发现；不会移除你的历史配置。"}</p></div></div><dl><div><dt>发现状态</dt><dd>{agent.installed ? "已安装" : "未安装"}</dd></div><div><dt>本机位置</dt><dd>{agent.path || "未发现可执行文件或配置目录"}</dd></div><div><dt>优先级</dt><dd>{agent.name === "DSH" ? "默认 Agent" : "可在后续偏好设置中排序"}</dd></div></dl></article> : <div className="module-list">{agents.map(item => <article key={item.name}><span className={item.installed ? "status" : "status warn"}></span><div><b>{item.name} · {item.installed ? "本机已发现" : "未发现"}</b><p>{item.installed ? item.path : "保留历史兼容展示"}</p></div><button onClick={() => setSelected(item.name)}>查看 ›</button></article>)}</div>}</>}</section>;
+}

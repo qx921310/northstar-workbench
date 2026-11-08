@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Northstar Workbench",
+  "version": "0.1.0",
+  "identifier": "com.xu3ji.northstar-workbench",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:4173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Northstar Workbench",
+        "width": 1100,
+        "height": 730,
+        "minWidth": 680,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "nsis"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NTUyQUZEOTM2NENGRUEKUldUcXoyU1QvU3BWTndyZ1JMYmg3TEF0K2U1aXlEYlJUbHlzQkpjMkd2R2tWUyszUENrSGJQeGIK",
+      "endpoints": ["https://github.com/qx921310/northstar-workbench/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}
