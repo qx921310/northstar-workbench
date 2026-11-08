@@ -1,4 +1,5 @@
 export type DesktopContext = {
+  environment: "development" | "production";
   vaultPath: string;
   taskDirectory: string;
   agents: Array<{ name: string; installed: boolean; path?: string }>;
@@ -60,6 +61,7 @@ export const desktopApi = {
   getGmailSetup: () => invoke<GmailSetup>("get_gmail_setup"),
   setGmailClientId: (clientId: string) => invoke<GmailSetup>("set_gmail_client_id", { clientId }),
   connectGmail: () => invoke<MailAccount>("connect_gmail"),
+  cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
   listMailMessages: (accountId: string) => invoke<MailMessage[]>("list_mail_messages", { accountId }),
   getMailMessage: (accountId: string, messageId: string) => invoke<MailMessage>("get_mail_message", { accountId, messageId }),
 };

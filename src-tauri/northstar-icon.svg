@@ -1,11 +1,11 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="a" x1="74" y1="52" x2="438" y2="468" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0A84FF"/>
-      <stop offset="1" stop-color="#5E5CE6"/>
-    </linearGradient>
+    <linearGradient id="surface" x1="150" y1="60" x2="880" y2="980" gradientUnits="userSpaceOnUse"><stop stop-color="#366bca"/><stop offset=".42" stop-color="#102c66"/><stop offset=".76" stop-color="#174688"/><stop offset="1" stop-color="#5caadd"/></linearGradient>
+    <linearGradient id="star" x1="280" y1="215" x2="760" y2="820" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset="1" stop-color="#b4e6ff"/></linearGradient>
+    <linearGradient id="needle" x1="375" y1="700" x2="650" y2="330" gradientUnits="userSpaceOnUse"><stop stop-color="#3676b8"/><stop offset=".5" stop-color="#153d78"/><stop offset="1" stop-color="#0c2252"/></linearGradient>
   </defs>
-  <rect width="512" height="512" rx="128" fill="url(#a)"/>
-  <path fill="#fff" d="m256 92 29 104 104 29-104 29-29 104-29-104-104-29 104-29 29-104Z"/>
-  <circle cx="365" cy="137" r="22" fill="#fff" fill-opacity=".72"/>
+  <rect x="30" y="30" width="964" height="964" rx="244" fill="url(#surface)"/>
+  <rect x="38" y="38" width="948" height="948" rx="236" fill="none" stroke="#d5ecff" stroke-opacity=".28" stroke-width="12"/>
+  <path d="M512 150 C536 300 554 370 603 421 C655 471 729 489 864 512 C729 535 655 553 603 603 C554 654 536 724 512 874 C488 724 470 654 421 603 C369 553 295 535 160 512 C295 489 369 471 421 421 C470 370 488 300 512 150Z" fill="url(#star)"/>
+  <path d="M685 344 557 555 340 681 468 470Z" fill="url(#needle)" stroke="#e0f6ff" stroke-width="10" stroke-linejoin="round"/>
 </svg>

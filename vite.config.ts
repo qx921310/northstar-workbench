@@ -4,5 +4,5 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  server: { port: 4173 },
+  server: { port: 4173, strictPort: true, watch: { ignored: ["**/src-tauri/target*/**"] } },
 });

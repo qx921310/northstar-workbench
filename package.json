@@ -1,12 +1,13 @@
 {
   "name": "northstar-workbench",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "tauri": "tauri",
-    "desktop:dev": "tauri dev",
+    "desktop:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "desktop:build:dev": "node scripts/build-dev.mjs",
     "desktop:build": "tauri build",
     "build": "tsc -b && vite build",
     "preview": "vite preview"

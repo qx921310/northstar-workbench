@@ -1,9 +1,12 @@
 [package]
 name = "northstar-workbench"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local-first personal workbench"
 authors = ["Northstar"]
 edition = "2021"
+
+[features]
+dev-isolation = []
 
 [lib]
 name = "northstar_workbench_lib"

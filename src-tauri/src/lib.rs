@@ -7,9 +7,19 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::form_urlencoded;
 use tauri::Manager;
+
+static GMAIL_AUTH: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
+
+fn hidden_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+    command
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +32,7 @@ struct AgentStatus {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopContext {
+    environment: &'static str,
     vault_path: String,
     task_directory: String,
     agents: Vec<AgentStatus>,
@@ -161,35 +172,34 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("C:\\Users\\Public"))
 }
 
+fn is_development() -> bool {
+    cfg!(any(debug_assertions, feature = "dev-isolation"))
+}
+
+fn app_data_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
+        .join(if is_development() { "Northstar Workbench Dev" } else { "Northstar Workbench" })
+}
+
 fn vault_path() -> PathBuf {
-    home_dir().join("ObsidianVault")
+    if is_development() { app_data_dir().join("TestVault") } else { home_dir().join("ObsidianVault") }
 }
 fn task_directory() -> PathBuf {
     vault_path().join("待办事项")
 }
 
 fn mail_registry_path() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
-        .join("Northstar Workbench")
-        .join("mail-accounts.json")
+    app_data_dir().join("mail-accounts.json")
 }
 
 fn mail_settings_path() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
-        .join("Northstar Workbench")
-        .join("mail-settings.json")
+    app_data_dir().join("mail-settings.json")
 }
 
 fn custom_services_path() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
-        .join("Northstar Workbench")
-        .join("custom-services.json")
+    app_data_dir().join("custom-services.json")
 }
 
 fn read_custom_services() -> Result<Vec<CustomService>, String> {
@@ -242,8 +252,12 @@ fn valid_google_client_id(value: &str) -> bool {
 }
 
 fn gmail_token_entry(account_id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("Northstar Workbench Gmail", account_id)
+    keyring::Entry::new(gmail_credential_service(), account_id)
         .map_err(|error| format!("无法打开 Windows 凭据管理器：{error}"))
+}
+
+fn gmail_credential_service() -> &'static str {
+    if is_development() { "Northstar Workbench Dev Gmail" } else { "Northstar Workbench Gmail" }
 }
 
 fn read_gmail_token(account_id: &str) -> Result<GmailToken, String> {
@@ -271,13 +285,21 @@ fn random_url_safe(length: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), length)
 }
 
-fn gmail_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
+fn gmail_callback(listener: TcpListener, expected_state: &str, cancelled: &AtomicBool) -> Result<String, String> {
     listener
-        .set_nonblocking(false)
+        .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
-    let (mut stream, _) = listener
-        .accept()
-        .map_err(|error| format!("等待 Google 授权回调失败：{error}"))?;
+    let started = Instant::now();
+    let (mut stream, _) = loop {
+        if cancelled.load(Ordering::SeqCst) { return Err("已取消 Gmail 授权".into()); }
+        if started.elapsed() >= Duration::from_secs(180) { return Err("等待 Google 授权超时，请检查浏览器提示后重试".into()); }
+        match listener.accept() {
+            Ok(connection) => break connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(format!("等待 Google 授权回调失败：{error}")),
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|error| error.to_string())?;
     let mut request = [0_u8; 8192];
     let bytes = stream
         .read(&mut request)
@@ -299,22 +321,23 @@ fn gmail_callback(listener: TcpListener, expected_state: &str) -> Result<String,
         form_urlencoded::parse(query.as_bytes())
             .into_owned()
             .collect();
-    let response = "<html><meta charset=\"utf-8\"><body><h2>Northstar 已收到授权</h2><p>可以关闭此页面并返回工作台。</p></body></html>";
-    let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes());
     if let Some(error) = params.get("error") {
         return Err(format!("Google 授权未完成：{error}"));
     }
     if params.get("state").map(String::as_str) != Some(expected_state) {
         return Err("Google 授权状态校验失败，请重试".to_string());
     }
-    params
+    let code = params
         .get("code")
         .cloned()
-        .ok_or_else(|| "Google 未返回授权码".to_string())
+        .ok_or_else(|| "Google 未返回授权码".to_string())?;
+    let response = "<html><meta charset=\"utf-8\"><body><h2>北极星已收到授权</h2><p>可以关闭此页面并返回工作台。</p></body></html>";
+    let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes());
+    Ok(code)
 }
 
 fn gmail_token_request(parameters: &[(&str, &str)]) -> Result<serde_json::Value, String> {
-    reqwest::blocking::Client::new()
+    reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|error| error.to_string())?
         .post("https://oauth2.googleapis.com/token")
         .form(parameters)
         .send()
@@ -459,6 +482,7 @@ fn desktop_context_from_home(home: &Path) -> DesktopContext {
     let vault = home.join("ObsidianVault");
     let tasks = vault.join("待办事项");
     DesktopContext {
+        environment: if is_development() { "development" } else { "production" },
         vault_path: vault.display().to_string(),
         task_directory: tasks.display().to_string(),
         agents: detect_agents(home),
@@ -700,7 +724,7 @@ fn probe_service(host: DshSshHost) -> ServiceStatus {
     };
     let remote = r#"printf '__host=%s\n' "$(hostname)"; printf '__uptime=%s\n' "$(uptime -p)"; printf '__load=%s\n' "$(cut -d ' ' -f1-3 /proc/loadavg)"; printf '__memory=%s\n' "$(free -m | awk '/Mem:/ {printf "%s/%sMB", $3, $2}')"; printf '__disk=%s\n' "$(df -P / | awk 'NR==2 {printf "%s used, %s free", $5, $4}')"; for svc in dsh-feishu openclaw-gateway docker; do printf '__%s=%s\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null || true)"; done; printf '__new-api=%s\n' "$(docker inspect --format='{{.State.Status}}' new-api 2>/dev/null || true)""#;
     let started = Instant::now();
-    let output = Command::new("ssh")
+    let output = hidden_command("ssh")
         .args([
             "-i",
             &key_path,
@@ -857,7 +881,10 @@ fn probe_custom_service(service: CustomService) -> ServiceStatus {
 
 #[tauri::command]
 fn get_desktop_context() -> DesktopContext {
-    desktop_context_from_home(&home_dir())
+    let mut context = desktop_context_from_home(&home_dir());
+    context.vault_path = vault_path().display().to_string();
+    context.task_directory = task_directory().display().to_string();
+    context
 }
 
 fn read_obsidian_tasks() -> Result<Vec<ObsidianTask>, String> {
@@ -1129,8 +1156,7 @@ fn set_gmail_client_id(client_id: String) -> Result<GmailSetup, String> {
     get_gmail_setup()
 }
 
-#[tauri::command]
-fn connect_gmail() -> Result<MailAccount, String> {
+fn connect_gmail_blocking(cancelled: Arc<AtomicBool>) -> Result<MailAccount, String> {
     let settings = read_mail_settings()?;
     let client_id = settings
         .gmail_client_id
@@ -1162,11 +1188,12 @@ fn connect_gmail() -> Result<MailAccount, String> {
         "https://accounts.google.com/o/oauth2/v2/auth?{}",
         query.finish()
     );
-    Command::new("rundll32")
+    hidden_command("rundll32")
         .args(["url.dll,FileProtocolHandler", &authorization_url])
         .spawn()
         .map_err(|error| format!("无法打开默认浏览器：{error}"))?;
-    let code = gmail_callback(listener, &state)?;
+    let code = gmail_callback(listener, &state, &cancelled)?;
+    if cancelled.load(Ordering::SeqCst) { return Err("已取消 Gmail 授权".into()); }
     let token_value = gmail_token_request(&[
         ("client_id", &client_id),
         ("code", &code),
@@ -1180,7 +1207,7 @@ fn connect_gmail() -> Result<MailAccount, String> {
         .to_string();
     let refresh_token = token_value["refresh_token"].as_str().map(str::to_string);
     let expires_in = token_value["expires_in"].as_u64().unwrap_or(3600);
-    let user: serde_json::Value = reqwest::blocking::Client::new()
+    let user: serde_json::Value = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|error| error.to_string())?
         .get("https://openidconnect.googleapis.com/v1/userinfo")
         .bearer_auth(&access_token)
         .send()
@@ -1218,6 +1245,7 @@ fn connect_gmail() -> Result<MailAccount, String> {
         accounts.push(account.clone());
         account
     };
+    if cancelled.load(Ordering::SeqCst) { return Err("已取消 Gmail 授权".into()); }
     write_gmail_token(
         &account.id,
         &GmailToken {
@@ -1228,6 +1256,29 @@ fn connect_gmail() -> Result<MailAccount, String> {
     )?;
     write_mail_accounts(&accounts)?;
     Ok(account)
+}
+
+#[tauri::command]
+async fn connect_gmail() -> Result<MailAccount, String> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut current = GMAIL_AUTH.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "授权状态不可用")?;
+        if current.is_some() { return Err("已有授权正在进行，请先取消或等待结束".into()); }
+        *current = Some(cancelled.clone());
+    }
+    let worker_cancelled = cancelled.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || connect_gmail_blocking(worker_cancelled)).await.map_err(|e| e.to_string());
+    if let Ok(mut current) = GMAIL_AUTH.get_or_init(|| Mutex::new(None)).lock() {
+        if current.as_ref().is_some_and(|value| Arc::ptr_eq(value, &cancelled)) { *current = None; }
+    }
+    result?
+}
+
+#[tauri::command]
+fn cancel_gmail_auth() -> Result<(), String> {
+    let current = GMAIL_AUTH.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "授权状态不可用")?;
+    if let Some(cancelled) = current.as_ref() { cancelled.store(true, Ordering::SeqCst); }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1319,7 +1370,7 @@ fn remove_custom_service(id: String) -> Result<(), String> {
 }
 
 fn read_services() -> Result<Vec<ServiceStatus>, String> {
-    let config_path = home_dir().join(".dsh").join("dsh-ssh.json");
+    let config_path = if is_development() { app_data_dir().join("dsh-ssh.json") } else { home_dir().join(".dsh").join("dsh-ssh.json") };
     let mut services = match fs::read_to_string(&config_path) {
         Ok(source) => {
             let config: DshSshConfig = serde_json::from_str(&source)
@@ -1345,6 +1396,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let expected_identifier = if is_development() { "com.xu3ji.northstar-workbench.dev" } else { "com.xu3ji.northstar-workbench" };
+            if app.config().identifier != expected_identifier {
+                return Err(std::io::Error::other("应用标识与数据环境不一致，已拒绝启动以保护数据").into());
+            }
+            if is_development() { fs::create_dir_all(task_directory())?; }
             if let Some(window) = app.get_webview_window("main") {
                 if let Ok(Some(monitor)) = window.current_monitor() {
                     let area = monitor.work_area();
@@ -1373,6 +1429,7 @@ pub fn run() {
             get_gmail_setup,
             set_gmail_client_id,
             connect_gmail,
+            cancel_gmail_auth,
             list_mail_messages,
             get_mail_message,
             register_custom_service,
@@ -1385,6 +1442,29 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gmail_wait_can_be_cancelled_without_a_browser_callback() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let worker = std::thread::spawn(move || gmail_callback(listener, "test-state", &flag));
+        cancelled.store(true, Ordering::SeqCst);
+        assert_eq!(worker.join().unwrap().unwrap_err(), "已取消 Gmail 授权");
+    }
+
+    #[cfg(any(debug_assertions, feature = "dev-isolation"))]
+    #[test]
+    fn development_storage_is_separate_from_production() {
+        assert!(is_development());
+        assert!(app_data_dir().ends_with("Northstar Workbench Dev"));
+        assert_eq!(vault_path(), app_data_dir().join("TestVault"));
+        assert_ne!(vault_path(), home_dir().join("ObsidianVault"));
+        assert!(mail_registry_path().starts_with(app_data_dir()));
+        assert!(mail_settings_path().starts_with(app_data_dir()));
+        assert!(custom_services_path().starts_with(app_data_dir()));
+        assert_eq!(gmail_credential_service(), "Northstar Workbench Dev Gmail");
+    }
 
     #[test]
     fn reads_northstar_details_without_exposing_metadata() {
