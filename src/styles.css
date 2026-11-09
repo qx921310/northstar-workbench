@@ -112,3 +112,38 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .night .mail-provider-tabs { background:#293442; }.night .mail-provider-tabs > button { color:#becbdb; }.night .mail-provider-tabs > button.active { color:#dceafe; background:#3b4d65; border-color:#50647e; }.night .mail-category-bar { border-color:#455469; }.night .mail-category-bar button { color:#c1ccdc; }.night .mail-category-bar button.active { color:#d5e8ff; background:#354c68; }.night .mail-toolbar button,.night .mail-account-picker select { color:#d4e8ff; background:#344a65; }.night .mail-account-picker,.night .mail-list-heading { color:#d2deed; }.night .mail-placeholder { color:#d4dfeb; }.night .mail-placeholder p,.night .mail-list-heading span,.night .inbox-header > span { color:#aebdd0; }.night .mail-empty-icon { color:#c6ddff; background:#344b67; }
 @media(max-width:720px) { .inbox-header > span { display:none; }.mail-provider-tabs > button { flex-basis:112px; }.inbox-redesign .message-list button { grid-template-columns:8px minmax(0,1fr); }.inbox-redesign .message-list button small { grid-column:2; grid-row:auto; text-align:left; } }
+
+/* The workspace extends beneath the floating dock. */
+.app-shell { padding-bottom:14px; }
+.titlebar { justify-content:flex-end; gap:12px; }
+.titlebar .brand { margin-right:auto; }
+.workspace > main > .module, .workspace > main > .home { scroll-padding-bottom:60px; }
+.workspace > main > .module:not(.inbox-redesign) { padding-bottom:70px; }
+.workspace > main > .home { padding-bottom:65px; }
+.module:not(.inbox-redesign) > .back, .module:not(.inbox-redesign) > .module-top { position:sticky; top:0; z-index:4; }
+.module:not(.inbox-redesign) > .module-top { padding-top:3px; pointer-events:none; }
+.module:not(.inbox-redesign) > .module-top .back { pointer-events:auto; }
+
+/* The mail navigation is outside the independently scrolling message area. */
+.workspace > main > .inbox-redesign { display:flex; flex-direction:column; overflow:hidden; padding:0 !important; }
+.inbox-fixed { flex:none; min-width:0; padding:clamp(20px,3vw,36px) clamp(20px,3vw,40px) 0; }
+.inbox-fixed .inbox-header { margin-bottom:18px; }
+.inbox-content { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:rgba(105,125,155,.35) transparent; padding:0 clamp(20px,3vw,40px) 75px; scroll-padding-bottom:65px; }
+.inbox-content > .mail-reader:last-child { margin-bottom:0; }
+
+/* A slim, discoverable dock; only the pointed or focused icon rises. */
+.sidebar { position:fixed; z-index:100; bottom:9px; padding:3px 8px; border-radius:16px; background:rgba(240,246,255,.82); box-shadow:0 6px 24px rgba(42,61,102,.15),inset 0 1px 0 rgba(255,255,255,.8); }
+.sidebar nav { gap:2px; padding:0; overflow:visible; }
+.sidebar nav button { position:relative; width:44px; min-width:44px; height:28px; min-height:28px; padding:0; overflow:visible; }
+.sidebar nav button.active::before { display:none; }
+.sidebar nav button .dock-icon, .sidebar nav button.active .dock-icon { position:absolute; left:50%; bottom:9px; width:10px; height:10px; border-radius:50%; color:transparent; font-size:0; background:#9aabc3; box-shadow:none; transform:translateX(-50%); transition:width .18s ease,height .18s ease,bottom .18s ease,background .18s ease,box-shadow .18s ease,color .18s ease,border-radius .18s ease,font-size .18s ease; }
+.sidebar nav button.active .dock-icon { background:#5b8fe3; }
+.sidebar nav button:hover .dock-icon, .sidebar nav button:focus-visible .dock-icon { bottom:16px; width:36px; height:36px; border-radius:12px; color:#3577d3; background:#e5efff; font-size:21px; transform:translateX(-50%); box-shadow:0 7px 18px rgba(53,91,149,.24); }
+.sidebar nav button.active:hover .dock-icon, .sidebar nav button.active:focus-visible .dock-icon { color:#fff; background:linear-gradient(145deg,#4d96ff,#7065ed); }
+.sidebar .dock-label { position:absolute; left:50%; bottom:57px; z-index:2; padding:4px 7px; border-radius:8px; color:#4d607c; background:rgba(247,250,255,.96); box-shadow:0 3px 10px rgba(36,57,90,.12); opacity:0; pointer-events:none; transform:translate(-50%,4px); transition:opacity .15s ease,transform .15s ease; }
+.sidebar nav button:hover .dock-label, .sidebar nav button:focus-visible .dock-label { opacity:1; transform:translate(-50%,0); }
+.sidebar .nav-badge { top:-4px; right:5px; min-width:15px; height:15px; font-size:9px !important; }
+.night .sidebar { background:rgba(41,52,68,.9); border-color:#506076; }.night .sidebar nav button .dock-icon { background:#8395af; }.night .sidebar nav button.active .dock-icon { background:#9abef3; }.night .sidebar nav button:hover .dock-icon,.night .sidebar nav button:focus-visible .dock-icon { color:#d9eaff; background:#415a78; }.night .sidebar nav button.active:hover .dock-icon,.night .sidebar nav button.active:focus-visible .dock-icon { color:white; background:linear-gradient(145deg,#4d96ff,#7065ed); }.night .sidebar .dock-label { color:#e0ebf9; background:#35465e; }
+@media(max-width:720px) { .app-shell { padding-bottom:10px; }.inbox-fixed { padding:18px 20px 0; }.inbox-content { padding:0 20px 70px; }.inbox-fixed .inbox-header { margin-bottom:12px; }.sidebar nav button { width:39px; min-width:39px; } }
+@media(max-height:600px) { .inbox-fixed .inbox-header .back { margin-bottom:6px; }.inbox-fixed .inbox-header { margin-bottom:9px; }.inbox-fixed .inbox-header .eyebrow { margin-bottom:4px; }.inbox-fixed .mail-category-bar { padding:8px 0; }.inbox-fixed .mail-provider-tabs > button { padding:6px 10px; } }
+@media(hover:none) { .sidebar nav button .dock-icon,.sidebar nav button.active .dock-icon { width:25px; height:25px; bottom:2px; border-radius:9px; font-size:15px; color:#3577d3; background:#e5efff; }.sidebar nav button.active .dock-icon { color:white; background:linear-gradient(145deg,#4d96ff,#7065ed); }.night .sidebar nav button .dock-icon { color:#d9eaff; background:#415a78; }.night .sidebar nav button.active .dock-icon { color:white; background:linear-gradient(145deg,#4d96ff,#7065ed); } }

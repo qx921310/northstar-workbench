@@ -96,6 +96,7 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
   const saveSecret = async () => { setBusy(true); setError(""); try { setSetup(await desktopApi.setGmailClientSecret(clientSecret)); setClientSecret(""); } catch (reason) { setError(reasonText(reason)); } finally { setBusy(false); } };
 
   return <section className="module inbox inbox-redesign">
+    <div className="inbox-fixed">
     <div className="inbox-header"><div><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">YOUR MAIL · 统一收件箱</p><h1>我的收件箱</h1></div><span>把重要的消息，留在眼前。</span></div>
     <div className="mail-provider-tabs" role="tablist" aria-label="邮箱类型，按住 Alt 加左右方向键可调整顺序">
       {order.map((item, index) => <button key={item} role="tab" aria-selected={provider === item} className={provider === item ? "active" : ""} draggable
@@ -106,6 +107,8 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
         onClick={() => { if (item !== provider) { generation.current++; setAccountId(""); setMessages([]); setMessage(null); setError(""); setShowSetup(false); setProvider(item); setCategory("all"); } }}><span className={`mail-provider-icon ${item}`}>{item === "gmail" ? "M" : item === "outlook" ? "O" : item === "qq" ? "Q" : "✉"}</span>{names[item]}<span className="drag-hint" aria-hidden="true">⠿</span></button>)}
     </div><span className="sr-only" aria-live="polite">{notice}</span>
     <div className="mail-category-bar" aria-label="邮件分类">{categories.map(item => <button key={item.id} className={category === item.id ? "active" : ""} aria-pressed={category === item.id} onClick={() => setCategory(item.id)}>{item.label}</button>)}</div>
+    </div>
+    <div className="inbox-content">
     {!desktop ? <div className="mail-placeholder"><b>请在 Windows 桌面版连接邮箱</b><p>桌面版可安全读取本机邮箱凭据。</p></div> : provider !== "gmail" ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>{names[provider]}暂未接入</b><p>这个邮箱的授权和同步还在建设中。</p></div> : <>
       {connected.length > 0 && <div className="mail-toolbar"><div className="mail-account-picker"><span className="status"></span>{connected.length === 1 ? <b>{connected[0].address}</b> : <select aria-label="选择 Gmail 账户" value={accountId} onChange={event => setAccountId(event.target.value)}>{connected.map(item => <option key={item.id} value={item.id}>{item.address}</option>)}</select>}</div><div><button onClick={() => setShowSetup(value => !value)}>{showSetup ? "完成" : "＋ 添加账号"}</button><button disabled={loading || !accountId} onClick={() => void refresh()}>{loading ? "同步中…" : "刷新"}</button></div></div>}
       {(showSetup || connected.length === 0) && <section className="mail-setup"><h2>{connected.length ? "添加 Gmail" : "连接 Gmail"}</h2><div className="gmail-methods"><button className={method === "app_password" ? "selected" : ""} onClick={() => setMethod("app_password")}>应用专用密码</button><button className={method === "oauth" ? "selected" : ""} onClick={() => setMethod("oauth")}>Google 授权（高级）</button></div>
@@ -114,5 +117,6 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
       {error && <p role="alert" className="inline-error">{error}</p>}
       {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p><pre>{message.body || message.snippet || "此邮件没有可显示的纯文本正文。"}</pre></article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>显示最近 20 封 · 只读</span></div>{loading ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
     </>}
+    </div>
   </section>;
 }
