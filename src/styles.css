@@ -249,3 +249,30 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .inbox-redesign .message-list .mail-select-row > button { border-bottom:0; }
 .night .mail-batch-toolbar { color:#d1dbea; }.night .mail-batch-toolbar button { color:#d6e8ff; background:#364b66; }.night .mail-select-row { border-color:#3d4047; }
 .task-detail-buttons button { min-height:22px; }
+.task-row-content { display:grid; gap:5px; min-width:0; flex:1; }
+.task-row-content > b { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+.task-completed { color:#8d99a7; }.night .task-completed { color:#a3aebd; }
+.task-completed .task-detail-list, .task-completed small { color:inherit; opacity:.8; }
+.task-done-icon { font-size:14px; }.task-row-content small button { border:0; padding:0; color:#1673d1; background:transparent; }
+.task-detail-list { display:grid; gap:6px; margin:3px 0; padding:0; }
+.task-detail-status { display:flex !important; align-items:flex-start; gap:6px !important; line-height:1.5; }
+.task-detail-status input { flex:none; width:15px; height:15px; margin:1px 0 0; accent-color:#258a69; }
+.task-detail-status span:last-child { min-width:0; overflow-wrap:anywhere; }
+.task-completed .task-detail-status > span:first-child { color:#2aa77a; }
+.reminder-picker { position:relative; gap:12px; }
+.reminder-calendar-wrap,.reminder-time { display:grid; gap:6px; color:#64748b; font-size:12px; }
+.reminder-date { display:flex; justify-content:space-between; align-items:center; width:100%; padding:10px 12px !important; border:1px solid #d7dfea !important; border-radius:10px !important; background:#fff !important; color:#263650 !important; text-align:left; font:inherit; }
+.reminder-calendar { z-index:12; padding:12px; border:1px solid rgba(125,153,195,.25); border-radius:14px; background:#f9fbff; box-shadow:0 12px 32px rgba(45,66,104,.16); }
+.calendar-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; color:#344866; }
+.calendar-heading button { width:30px; height:30px; padding:0; font-size:20px; }.calendar-heading button:disabled { opacity:.3; }
+.calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; text-align:center; }
+.calendar-grid .calendar-weekday { padding:4px 0; color:#8795aa; }.calendar-grid button { min-width:0; padding:6px 0; color:#3b5579; background:transparent; }
+.calendar-grid button[aria-pressed=true] { color:#fff; background:#347ef0; }.calendar-grid button:disabled { color:#bdc7d4; opacity:.6; }
+.reminder-time-fields { display:flex; align-items:center; gap:12px; }.reminder-time-fields label { display:flex; align-items:center; gap:6px; flex:1; }
+.reminder-time-fields select { width:100%; border:1px solid #d7dfea; border-radius:10px; padding:9px; color:#263650; background:#fff; font:inherit; }
+.night .reminder-calendar { background:#303d50; border-color:#5c7089; }.night .calendar-heading,.night .calendar-grid button { color:#e2ebf8; }.night .calendar-grid button:disabled { color:#8794a5; }.night .reminder-date,.night .reminder-time-fields select { color:#f1f4f8 !important; background:#303946 !important; border-color:#657489 !important; }.night .reminder-calendar-wrap,.night .reminder-time { color:#d1dbea; }
+.task-row input[type=checkbox], .task-form input[type=checkbox] { appearance:none; width:18px; height:18px; flex:none; border:1.5px solid #aab9cc; border-radius:6px; background:#fff; display:inline-grid; place-content:center; cursor:pointer; }
+.task-row input[type=checkbox]::after, .task-form input[type=checkbox]::after { content:""; width:8px; height:4px; border-left:2px solid white; border-bottom:2px solid white; transform:rotate(-45deg) scale(0); }
+.task-row input[type=checkbox]:checked, .task-form input[type=checkbox]:checked { background:#318b71; border-color:#318b71; }
+.task-row input[type=checkbox]:checked::after, .task-form input[type=checkbox]:checked::after { transform:rotate(-45deg) scale(1); }
+.night .task-row input[type=checkbox], .night .task-form input[type=checkbox] { background:#334257; border-color:#91a2b7; }.night .task-row input[type=checkbox]:checked, .night .task-form input[type=checkbox]:checked { background:#318b71; border-color:#318b71; }

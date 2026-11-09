@@ -44,6 +44,7 @@ struct ObsidianTask {
     id: String,
     title: String,
     details: String,
+    item_states: Vec<bool>,
     raw: String,
     completed: bool,
     reminder_at: Option<String>,
@@ -618,6 +619,13 @@ fn task_from_line(file: &str, line: usize, raw: &str) -> Option<ObsidianTask> {
         return None;
     };
     let (title, reminder_at) = split_task_reminder(title);
+    let (title, stored_states) = match title.rsplit_once(" <!-- northstar-items:") {
+        Some((name, value)) if value.ends_with(" -->") => {
+            let parsed = URL_SAFE_NO_PAD.decode(value.trim_end_matches(" -->")).ok().and_then(|v| serde_json::from_slice::<Vec<bool>>(&v).ok());
+            match parsed { Some(states) => (name.to_string(), Some(states)), None => (title.clone(), None) }
+        }
+        _ => (title, None),
+    };
     let (title, details) = match title.rsplit_once(" <!-- northstar-detail:") {
         Some((name, value)) if value.ends_with(" -->") => {
             let encoded = value.trim_end_matches(" -->");
@@ -632,7 +640,11 @@ fn task_from_line(file: &str, line: usize, raw: &str) -> Option<ObsidianTask> {
         }
         _ => (title, String::new()),
     };
+    let count = task_detail_items(&details).len();
+    let mut item_states = stored_states.unwrap_or_default();
+    item_states.resize(count, completed); item_states.truncate(count);
     Some(ObsidianTask {
+        item_states,
         id: format!("{file}:{line}"),
         title,
         details,
@@ -642,6 +654,24 @@ fn task_from_line(file: &str, line: usize, raw: &str) -> Option<ObsidianTask> {
         file: file.to_string(),
         line,
     })
+}
+
+fn task_detail_items(details: &str) -> Vec<&str> {
+    details.lines().map(str::trim).filter(|item| !item.is_empty()).collect()
+}
+fn format_northstar_task(title: &str, details: &str, states: &[bool], reminder: Option<&str>, completed: bool) -> String {
+    let visible = details.split_whitespace().collect::<Vec<_>>().join(" ");
+    let visible = if visible.is_empty() { String::new() } else { format!(" — {visible}") };
+    let marker = format!(" <!-- northstar-detail:{} -->", URL_SAFE_NO_PAD.encode(details.trim().as_bytes()));
+    let items = if states.is_empty() { String::new() } else { format!(" <!-- northstar-items:{} -->", URL_SAFE_NO_PAD.encode(serde_json::to_vec(states).expect("bool states serialize"))) };
+    let reminder = reminder.map(|value| format!(" <!-- northstar-remind:{value} -->")).unwrap_or_default();
+    format!("- [{}] {title}{visible}{marker}{items}{reminder}", if completed { "x" } else { " " })
+}
+fn reconcile_task_states(old_details: &str, old_states: &[bool], new_details: &str) -> Vec<bool> {
+    let old = task_detail_items(old_details); let mut used = vec![false; old.len()];
+    task_detail_items(new_details).iter().map(|item| {
+        if let Some(index) = old.iter().enumerate().position(|(i, value)| !used[i] && value == item) { used[index] = true; old_states.get(index).copied().unwrap_or(false) } else { false }
+    }).collect()
 }
 
 fn split_task_reminder(value: &str) -> (String, Option<String>) {
@@ -666,15 +696,15 @@ fn split_task_reminder(value: &str) -> (String, Option<String>) {
 
 fn valid_reminder_at(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() == 16
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes[10] == b'T'
-        && bytes[13] == b':'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13) || byte.is_ascii_digit())
+    if bytes.len() != 16 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || !bytes.iter().enumerate().all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13) || byte.is_ascii_digit()) { return false; }
+    let Ok(year) = value[0..4].parse::<u32>() else { return false; };
+    let Ok(month) = value[5..7].parse::<u32>() else { return false; };
+    let Ok(day) = value[8..10].parse::<u32>() else { return false; };
+    let Ok(hour) = value[11..13].parse::<u32>() else { return false; };
+    let Ok(minute) = value[14..16].parse::<u32>() else { return false; };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month { 1 | 3 | 5 | 7 | 8 | 10 | 12 => 31, 4 | 6 | 9 | 11 => 30, 2 if leap => 29, 2 => 28, _ => 0 };
+    year > 0 && day > 0 && day <= max_day && hour < 24 && minute < 60
 }
 
 fn safe_reminder_at(value: Option<String>) -> Result<Option<String>, String> {
@@ -1003,10 +1033,12 @@ fn create_obsidian_task(
     details: String,
     reminder_at: Option<String>,
 ) -> Result<ObsidianTask, String> {
+    create_task_at(&task_directory(), title, details, reminder_at)
+}
+fn create_task_at(directory: &Path, title: String, details: String, reminder_at: Option<String>) -> Result<ObsidianTask, String> {
     let title = safe_note_name(&title)?;
     if title.contains(['\r', '\n']) { return Err("标题不能换行".into()); }
     let reminder_at = safe_reminder_at(reminder_at)?;
-    let directory = task_directory();
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let path = directory.join("Northstar.md");
     let mut content = if path.exists() {
@@ -1018,48 +1050,57 @@ fn create_obsidian_task(
         content.push('\n');
     }
     let line = content.lines().count();
-    let metadata = reminder_at
-        .as_ref()
-        .map(|value| format!(" <!-- northstar-remind:{value} -->"))
-        .unwrap_or_default();
     let details = details.trim().to_string();
-    let detail_marker = format!(" <!-- northstar-detail:{} -->", URL_SAFE_NO_PAD.encode(details.as_bytes()));
-    let visible_details = details.split_whitespace().collect::<Vec<_>>().join(" ");
-    let visible_details = if visible_details.is_empty() { String::new() } else { format!(" — {visible_details}") };
-    content.push_str(&format!("- [ ] {title}{visible_details}{detail_marker}{metadata}\n"));
+    let item_states = vec![false; task_detail_items(&details).len()];
+    let raw = format_northstar_task(&title, &details, &item_states, reminder_at.as_deref(), false);
+    content.push_str(&format!("{raw}\n"));
     fs::write(&path, content).map_err(|error| error.to_string())?;
-    Ok(ObsidianTask {
-        id: format!("待办事项/Northstar.md:{line}"),
-        raw: format!("- [ ] {title}{visible_details}{detail_marker}{metadata}"),
-        title,
-        details,
-        completed: false,
-        reminder_at,
-        file: "待办事项/Northstar.md".to_string(),
-        line,
-    })
+    Ok(ObsidianTask { id: format!("待办事项/Northstar.md:{line}"), raw, title, details, item_states, completed: false, reminder_at, file: "待办事项/Northstar.md".to_string(), line })
 }
 
 #[tauri::command]
 fn change_northstar_task(line: usize, expected: String, title: Option<String>, details: Option<String>, reminder_at: Option<String>) -> Result<(), String> {
-    let path = task_directory().join("Northstar.md");
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    change_task_at(&task_directory().join("Northstar.md"), line, &expected, title, details, reminder_at)
+}
+fn change_task_at(path: &Path, line: usize, expected: &str, title: Option<String>, details: Option<String>, reminder_at: Option<String>) -> Result<(), String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut lines: Vec<String> = content.split_inclusive('\n').map(str::to_owned).collect();
     let source = lines.get(line).ok_or("待办已不存在，请刷新")?;
     let source_text = source.trim_end_matches(['\r', '\n']);
     if source_text != expected { return Err("待办已变化，请刷新后重试".into()); }
+    let existing = task_from_line("待办事项/Northstar.md", line, source_text).ok_or("目标行不是待办")?;
     if let Some(title) = title {
+        if existing.completed { return Err("已完成的待办不能修改".into()); }
         let title = safe_note_name(&title)?;
         if title.contains(['\r', '\n']) { return Err("标题不能换行".into()); }
-        let reminder = safe_reminder_at(reminder_at)?.map(|v| format!(" <!-- northstar-remind:{v} -->")).unwrap_or_default();
-        let details = details.unwrap_or_default();
-        let visible_details = details.split_whitespace().collect::<Vec<_>>().join(" ");
-        let visible_details = if visible_details.is_empty() { String::new() } else { format!(" — {visible_details}") };
-        let prefix = if source.trim_start().starts_with("- [x] ") || source.trim_start().starts_with("- [X] ") { "- [x] " } else if source.trim_start().starts_with("- [ ] ") { "- [ ] " } else { return Err("目标行不是待办".into()); };
+        let reminder = safe_reminder_at(reminder_at)?;
+        let details = details.unwrap_or_default().trim().to_string();
+        let states = reconcile_task_states(&existing.details, &existing.item_states, &details);
+        let completed = !states.is_empty() && states.iter().all(|done| *done);
         let ending = if source.ends_with("\r\n") { "\r\n" } else if source.ends_with('\n') { "\n" } else { "" };
-        lines[line] = format!("{prefix}{title}{visible_details} <!-- northstar-detail:{} -->{reminder}{ending}", URL_SAFE_NO_PAD.encode(details.trim().as_bytes()));
+        lines[line] = format!("{}{ending}", format_northstar_task(&title, &details, &states, reminder.as_deref(), completed));
     } else { lines.remove(line); }
     fs::write(path, lines.concat()).map_err(|e| e.to_string())
+}
+
+fn set_task_item_at(path: &Path, line: usize, expected: &str, item: usize, completed: bool) -> Result<(), String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut lines: Vec<String> = content.split_inclusive('\n').map(str::to_owned).collect();
+    let source = lines.get(line).ok_or("待办已不存在，请刷新")?;
+    let text = source.trim_end_matches(['\r', '\n']);
+    if text != expected { return Err("待办已变化，请刷新后重试".into()); }
+    let mut task = task_from_line("待办事项/Northstar.md", line, text).ok_or("目标行不是待办")?;
+    if task.completed { return Err("已完成的待办不能修改".into()); }
+    let state = task.item_states.get_mut(item).ok_or("事项已变化，请刷新")?;
+    *state = completed;
+    let all_done = !task.item_states.is_empty() && task.item_states.iter().all(|value| *value);
+    let ending = if source.ends_with("\r\n") { "\r\n" } else if source.ends_with('\n') { "\n" } else { "" };
+    lines[line] = format!("{}{ending}", format_northstar_task(&task.title, &task.details, &task.item_states, task.reminder_at.as_deref(), all_done));
+    fs::write(path, lines.concat()).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn set_northstar_task_item(line: usize, expected: String, item: usize, completed: bool) -> Result<(), String> {
+    set_task_item_at(&task_directory().join("Northstar.md"), line, &expected, item, completed)
 }
 
 #[tauri::command]
@@ -1076,6 +1117,9 @@ fn set_obsidian_task_completion(file: String, line: usize, completed: bool) -> R
     let source = lines
         .get_mut(line)
         .ok_or_else(|| "待办已不存在或文件已变化".to_string())?;
+    let current = task_from_line(&file, line, source).ok_or("目标行不是待办")?;
+    if current.completed { return Err("已完成的待办不能修改状态".into()); }
+    if !current.item_states.is_empty() { return Err("请逐项完成事项".into()); }
     let replacement = if completed { "- [x] " } else { "- [ ] " };
     if source.trim_start().starts_with("- [x] ")
         || source.trim_start().starts_with("- [X] ")
@@ -1630,6 +1674,7 @@ pub fn run() {
             create_obsidian_task,
             change_northstar_task,
             set_obsidian_task_completion,
+            set_northstar_task_item,
             list_obsidian_notes,
             read_obsidian_note,
             create_obsidian_note,
@@ -1955,5 +2000,47 @@ mod note_read_regression_tests {
         assert!(read_note_at(&root, "nested/note.txt").is_err());
         assert!(read_note_at(&root, "nested/missing.md").is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod task_lifecycle_regression_tests {
+    use super::*;
+    #[test]
+    fn reminder_and_individual_items_round_trip_and_lock_on_completion() {
+        let dir = std::env::temp_dir().join(format!("northstar-task-test-{}", random_url_safe(16)));
+        let created = create_task_at(&dir, "测试".into(), "第一项\n第二项".into(), Some("2099-12-31T23:59".into())).unwrap();
+        let path = dir.join("Northstar.md");
+        let loaded = fs::read_to_string(&path).unwrap();
+        let line = loaded.lines().nth(created.line).unwrap();
+        let task = task_from_line("待办事项/Northstar.md", created.line, line).unwrap();
+        assert_eq!(task.reminder_at.as_deref(), Some("2099-12-31T23:59"));
+        assert_eq!(task.item_states, [false, false]); assert!(!task.completed);
+        set_task_item_at(&path, task.line, &task.raw, 0, true).unwrap();
+        let first = fs::read_to_string(&path).unwrap();
+        let first = task_from_line("待办事项/Northstar.md", task.line, first.lines().nth(task.line).unwrap()).unwrap();
+        assert_eq!(first.item_states, [true, false]); assert!(!first.completed);
+        assert!(set_task_item_at(&path, task.line, &task.raw, 1, true).is_err());
+        set_task_item_at(&path, first.line, &first.raw, 1, true).unwrap();
+        let done = fs::read_to_string(&path).unwrap();
+        let done = task_from_line("待办事项/Northstar.md", first.line, done.lines().nth(first.line).unwrap()).unwrap();
+        assert!(done.completed); assert_eq!(done.item_states, [true, true]);
+        assert!(set_task_item_at(&path, done.line, &done.raw, 0, false).is_err());
+        assert!(change_task_at(&path, done.line, &done.raw, Some("不能改".into()), Some("内容".into()), None).is_err());
+        change_task_at(&path, done.line, &done.raw, None, None, None).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().lines().all(|l| !l.starts_with("- [")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn legacy_details_and_dates_are_compatible() {
+        let details = "一\n二";
+        let old = format!("- [ ] 旧任务 — 一 二 <!-- northstar-detail:{} -->", URL_SAFE_NO_PAD.encode(details));
+        let task = task_from_line("待办事项/Northstar.md", 0, &old).unwrap();
+        assert_eq!(task.item_states, [false, false]);
+        assert_eq!(reconcile_task_states(details, &[true, false], "二\n一\n三"), [false, true, false]);
+        assert!(valid_reminder_at("2028-02-29T23:59"));
+        assert!(!valid_reminder_at("2027-02-29T23:59"));
+        assert!(!valid_reminder_at("2027-03-01T24:00"));
+        assert!(!valid_reminder_at("2027-03-01T12:60"));
     }
 }

@@ -5,7 +5,7 @@ export type DesktopContext = {
   agents: Array<{ name: string; installed: boolean; path?: string }>;
 };
 
-export type ObsidianTask = { id: string; title: string; details: string; raw: string; completed: boolean; reminderAt?: string; file: string; line: number };
+export type ObsidianTask = { id: string; title: string; details: string; itemStates?: boolean[]; raw: string; completed: boolean; reminderAt?: string; file: string; line: number };
 export type ObsidianNote = { file: string; title: string; preview: string };
 export type ServiceStatus = {
   id: string; name: string; description: string; reachable: boolean; latencyMs?: number;
@@ -50,7 +50,8 @@ export const desktopApi = {
   uiUpdateReady: () => invoke<number>("ui_update_ready"),
   checkUiUpdate: () => invoke<{revision: number} | null>("check_ui_update"),
   applyUiUpdate: () => invoke<void>("apply_ui_update"),
-  listTasks: () => readOnce<ObsidianTask[]>("list_obsidian_tasks"),
+  listTasks: () => invoke<ObsidianTask[]>("list_obsidian_tasks"),
+  setTaskItem: (task: ObsidianTask, item: number, completed: boolean) => invoke<void>("set_northstar_task_item", { line: task.line, expected: task.raw, item, completed }),
   createTask: (title: string, details: string, reminderAt?: string) => invoke<ObsidianTask>("create_obsidian_task", { title, details, reminderAt }),
   changeTask: (task: ObsidianTask, title?: string, details?: string, reminderAt?: string) => invoke<void>("change_northstar_task", { line: task.line, expected: task.raw, title, details, reminderAt }),
   setTaskCompletion: (file: string, line: number, completed: boolean) => invoke<void>("set_obsidian_task_completion", { file, line, completed }),
