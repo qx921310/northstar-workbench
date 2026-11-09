@@ -118,6 +118,8 @@ struct MailAccount {
     connection_state: String,
 }
 
+mod imap_mail;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GmailSetup {
@@ -253,6 +255,9 @@ fn valid_google_client_id(value: &str) -> bool {
 }
 
 fn gmail_token_entry(account_id: &str) -> Result<keyring::Entry, String> {
+    #[cfg(not(windows))]
+    { let _ = account_id; return Err("当前系统尚未配置安全凭据存储，不能连接邮箱".into()); }
+    #[cfg(windows)]
     keyring::Entry::new(gmail_credential_service(), account_id)
         .map_err(|error| format!("无法打开 Windows 凭据管理器：{error}"))
 }
@@ -262,6 +267,9 @@ fn gmail_credential_service() -> &'static str {
 }
 
 fn gmail_client_secret_entry(client_id: &str) -> Result<keyring::Entry, String> {
+    #[cfg(not(windows))]
+    { let _ = client_id; return Err("当前系统尚未配置安全凭据存储，不能连接邮箱".into()); }
+    #[cfg(windows)]
     keyring::Entry::new(gmail_oauth_credential_service(), client_id).map_err(|_| "无法打开客户端密钥存储".to_string())
 }
 
@@ -1289,7 +1297,7 @@ fn connect_gmail_blocking(cancelled: Arc<AtomicBool>) -> Result<MailAccount, Str
     let mut accounts = read_mail_accounts()?;
     let account = if let Some(existing) = accounts
         .iter_mut()
-        .find(|account| account.provider == "gmail" && account.address == address)
+        .find(|account| account.provider == "gmail" && account.address == address && account.auth_type == "oauth")
     {
         existing.label = label;
         existing.connection_state = "connected".to_string();
@@ -1347,7 +1355,11 @@ fn cancel_gmail_auth() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
+async fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_mail_messages_blocking(account_id)).await.map_err(|_| "读取邮件任务失败".to_string())?
+}
+
+fn list_mail_messages_blocking(account_id: String) -> Result<Vec<MailMessage>, String> {
     let accounts = read_mail_accounts()?;
     let account = accounts
         .iter()
@@ -1356,6 +1368,7 @@ fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
     if account.provider != "gmail" || account.connection_state != "connected" {
         return Err("该邮箱尚未完成 Gmail 连接".to_string());
     }
+    if account.auth_type == "app_password" { return imap_mail::list(account); }
     let listing = gmail_api_get(&account.id, "messages?labelIds=INBOX&maxResults=20")?;
     let mut messages = Vec::new();
     for id in listing["messages"]
@@ -1374,7 +1387,11 @@ fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
 }
 
 #[tauri::command]
-fn get_mail_message(account_id: String, message_id: String) -> Result<MailMessage, String> {
+async fn get_mail_message(account_id: String, message_id: String) -> Result<MailMessage, String> {
+    tauri::async_runtime::spawn_blocking(move || get_mail_message_blocking(account_id, message_id)).await.map_err(|_| "读取邮件任务失败".to_string())?
+}
+
+fn get_mail_message_blocking(account_id: String, message_id: String) -> Result<MailMessage, String> {
     if message_id.trim().is_empty()
         || !message_id
             .chars()
@@ -1390,6 +1407,7 @@ fn get_mail_message(account_id: String, message_id: String) -> Result<MailMessag
     if account.provider != "gmail" || account.connection_state != "connected" {
         return Err("该邮箱尚未完成 Gmail 连接".to_string());
     }
+    if account.auth_type == "app_password" { return imap_mail::message(account, &message_id); }
     let message = gmail_api_get(&account.id, &format!("messages/{message_id}?format=full"))?;
     Ok(mail_message_from_gmail(&message, true))
 }
@@ -1495,6 +1513,7 @@ pub fn run() {
             set_gmail_client_id,
             set_gmail_client_secret,
             connect_gmail,
+            imap_mail::connect_gmail_imap,
             cancel_gmail_auth,
             list_mail_messages,
             get_mail_message,
@@ -1508,6 +1527,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_credential_store_persists_across_separate_entries() {
+        let name = format!("selftest-{}", random_url_safe(24));
+        let service = "Northstar Workbench Credential Selftest";
+        struct Cleanup(keyring::Entry);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = self.0.delete_credential(); } }
+        let entry = keyring::Entry::new(service, &name).unwrap();
+        let _cleanup = Cleanup(keyring::Entry::new(service, &name).unwrap());
+        entry.set_password("northstar-synthetic-test-value").unwrap();
+        drop(entry);
+        let reopened = keyring::Entry::new(service, &name).unwrap();
+        assert_eq!(reopened.get_password().unwrap(), "northstar-synthetic-test-value");
+    }
 
     #[test]
     fn token_requests_include_secret_only_when_configured() {
