@@ -55,6 +55,7 @@ export const desktopApi = {
   changeTask: (task: ObsidianTask, title?: string, details?: string, reminderAt?: string) => invoke<void>("change_northstar_task", { line: task.line, expected: task.raw, title, details, reminderAt }),
   setTaskCompletion: (file: string, line: number, completed: boolean) => invoke<void>("set_obsidian_task_completion", { file, line, completed }),
   listNotes: (query: string) => readOnce<ObsidianNote[]>("list_obsidian_notes", { query }),
+  readNote: (file: string) => invoke<string>("read_obsidian_note", { file }),
   createNote: (directory: string, title: string) => invoke<ObsidianNote>("create_obsidian_note", { directory, title }),
   createDirectory: (path: string) => invoke<void>("create_obsidian_directory", { path }),
   listServices: () => readOnce<ServiceStatus[]>("list_services"),

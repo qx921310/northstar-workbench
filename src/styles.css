@@ -164,3 +164,24 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .message-html pre { white-space:pre-wrap; }
 .night .message-html { color:#f5f1ea; }
 .module:not(.inbox-redesign) > h1, .module-heading { margin-bottom:24px; }
+
+/* Inert mail tables are commonly used for layout, not spreadsheet borders. */
+.message-html table { border:0; border-collapse:collapse; }
+.message-html td, .message-html th { border:0; padding:0; vertical-align:top; }
+.message-html p { margin:.5em 0; }
+.message-html { max-width:100%; font-size:14px; }
+.note-list button.note-row { display:flex; width:100%; justify-content:space-between; align-items:center; text-align:left; border:0; border-bottom:1px solid rgba(136,153,180,.18); padding:16px 20px; background:transparent; color:inherit; }
+.note-list button.note-row:hover { background:rgba(116,160,224,.10); }
+.note-detail { padding:24px; border-radius:22px; background:rgba(255,255,255,.82); }
+.note-detail h2 { margin:0 0 8px; }.note-detail small { color:#73819a; }.note-detail pre { white-space:pre-wrap; overflow-wrap:anywhere; font:14px/1.75 system-ui,sans-serif; }
+.night .note-detail { background:#24262b; color:#f5f1ea; }
+.inbox-fixed { transition:padding .2s ease; }
+.inbox-fixed .inbox-header { overflow:hidden; max-height:55px; transition:max-height .2s ease,margin .2s ease,opacity .15s ease; }
+.inbox-fixed.compact { padding-top:8px; }
+.inbox-fixed.compact .inbox-header { max-height:0; margin-bottom:0; opacity:0; }
+.inbox-fixed.compact .mail-provider-tabs { padding:3px; border-radius:12px; }
+.inbox-fixed.compact .mail-provider-tabs > button { padding:4px 10px; }
+.inbox-fixed.compact .mail-provider-icon { width:24px; height:24px; border-radius:8px; }
+.inbox-fixed.compact .mail-category-bar { padding:5px 0; }
+.inbox-fixed.compact .mail-category-bar button { padding:5px 12px; }
+@media (prefers-reduced-motion:reduce) { .inbox-fixed,.inbox-fixed .inbox-header { transition:none; } }

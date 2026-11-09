@@ -51,7 +51,7 @@ struct ObsidianTask {
     line: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ObsidianNote {
     file: String,
@@ -1087,47 +1087,53 @@ fn set_obsidian_task_completion(file: String, line: usize, completed: bool) -> R
     }
 }
 
+#[derive(Clone)]
+struct IndexedNote { modified: Option<SystemTime>, len: u64, content: String, note: ObsidianNote }
+static NOTE_INDEX: OnceLock<Mutex<std::collections::HashMap<PathBuf, IndexedNote>>> = OnceLock::new();
+
 fn read_obsidian_notes(query: String) -> Result<Vec<ObsidianNote>, String> {
     let root = vault_path();
+    let root_canonical = match root.canonicalize() { Ok(value) => value, Err(_) if !root.exists() => return Ok(Vec::new()), Err(error) => return Err(error.to_string()) };
     let mut files = Vec::new();
     markdown_files(&root, &mut files)?;
+    let mut index = NOTE_INDEX.get_or_init(Default::default).lock().map_err(|_| "笔记索引不可用")?;
+    let mut present = std::collections::HashSet::new();
     let query = query.trim().to_lowercase();
     let mut notes = Vec::new();
     for path in files {
-        let file = relative_display(&root, &path);
-        let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let title = content
-            .lines()
-            .find_map(|line| line.strip_prefix("# "))
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("未命名笔记")
-                    .to_string()
-            });
-        if query.is_empty()
-            || title.to_lowercase().contains(&query)
-            || content.to_lowercase().contains(&query)
-        {
-            let preview = content
-                .lines()
-                .find(|line| !line.trim().is_empty() && !line.starts_with('#'))
-                .unwrap_or("空笔记")
-                .trim()
-                .chars()
-                .take(96)
-                .collect();
-            notes.push(ObsidianNote {
-                file,
-                title,
-                preview,
-            });
+        // Ignore links escaping the selected Vault, including directory junctions.
+        if !path.canonicalize().is_ok_and(|resolved| resolved.starts_with(&root_canonical)) { continue; }
+        let metadata = match fs::metadata(&path) { Ok(value) => value, Err(_) => continue };
+        let modified = metadata.modified().ok();
+        present.insert(path.clone());
+        if !index.get(&path).is_some_and(|item| item.modified.is_some() && item.modified == modified && item.len == metadata.len()) {
+            let content = match fs::read_to_string(&path) { Ok(value) => value, Err(_) => { index.remove(&path); continue; } };
+            let title = content.lines().find_map(|line| line.strip_prefix("# ")).map(str::to_owned).unwrap_or_else(|| path.file_stem().and_then(|value| value.to_str()).unwrap_or("未命名笔记").to_string());
+            let preview = content.lines().find(|line| !line.trim().is_empty() && !line.starts_with('#')).unwrap_or("空笔记").trim().chars().take(96).collect();
+            index.insert(path.clone(), IndexedNote { modified, len: metadata.len(), content, note: ObsidianNote { file: relative_display(&root, &path), title, preview } });
+        }
+        if let Some(item) = index.get(&path) {
+            if query.is_empty() || item.note.title.to_lowercase().contains(&query) || item.content.to_lowercase().contains(&query) { notes.push(item.note.clone()); }
         }
     }
+    index.retain(|path, _| present.contains(path));
     notes.sort_by(|left, right| left.title.cmp(&right.title));
     notes.truncate(100);
     Ok(notes)
+}
+
+fn read_note_at(root: &Path, file: &str) -> Result<String, String> {
+    let relative = safe_relative(file)?;
+    if relative.extension().and_then(|part| part.to_str()).is_none_or(|ext| !ext.eq_ignore_ascii_case("md")) { return Err("只能读取 Markdown 笔记".into()); }
+    let root = root.canonicalize().map_err(|_| "无法访问 Vault".to_string())?;
+    let path = root.join(relative).canonicalize().map_err(|_| "笔记不存在或无法访问".to_string())?;
+    if !path.starts_with(&root) { return Err("路径必须位于 Obsidian Vault 内".into()); }
+    if fs::metadata(&path).map_err(|_| "无法读取笔记")?.len() > 5_242_880 { return Err("笔记超过 5 MB，暂无法在此打开".into()); }
+    fs::read_to_string(path).map_err(|_| "无法读取笔记正文".into())
+}
+#[tauri::command]
+async fn read_obsidian_note(file: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || read_note_at(&vault_path(), &file)).await.map_err(|_| "读取笔记任务失败".to_string())?
 }
 
 #[tauri::command]
@@ -1560,6 +1566,7 @@ pub fn run() {
                     let _ = window.set_size(tauri::LogicalSize::new(width, height));
                     let _ = window.center();
                 }
+                let _ = window.show();
             }
             Ok(())
         })
@@ -1573,6 +1580,7 @@ pub fn run() {
             change_northstar_task,
             set_obsidian_task_completion,
             list_obsidian_notes,
+            read_obsidian_note,
             create_obsidian_note,
             create_obsidian_directory,
             list_services,
@@ -1878,5 +1886,21 @@ mod html_mail_regression_tests {
         let message = mail_message_from_gmail(&input, true);
         assert_eq!(message.body.as_deref(), Some("实际正文"));
         assert!(message.html_body.is_none());
+    }
+}
+
+#[cfg(test)]
+mod note_read_regression_tests {
+    use super::*;
+    #[test]
+    fn reads_only_markdown_inside_vault() {
+        let root = std::env::temp_dir().join(format!("northstar-note-{}", random_url_safe(12)));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/note.md"), "# 标题\n\n完整正文").unwrap();
+        assert_eq!(read_note_at(&root, "nested/note.md").unwrap(), "# 标题\n\n完整正文");
+        assert!(read_note_at(&root, "../outside.md").is_err());
+        assert!(read_note_at(&root, "nested/note.txt").is_err());
+        assert!(read_note_at(&root, "nested/missing.md").is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
