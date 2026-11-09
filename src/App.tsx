@@ -84,13 +84,11 @@ export default function App() {
   const installUpdate = async () => {
     if ((!update && !uiUpdate) || updateState.startsWith("正在")) return;
     if (!update && uiUpdate) {
-      if (!window.confirm("发现界面更新，应用窗口会刷新，未保存的输入可能丢失。现在更新？")) return;
       setUpdateState("正在应用界面更新…");
       try { await desktopApi.applyUiUpdate(); } catch (error) { setUpdateState(`界面更新失败：${error instanceof Error ? error.message : String(error)}`); }
       return;
     }
     if (!update) return;
-    if (!window.confirm(`发现新版本 V${update.version}，现在下载并安装？应用将退出并重新启动。`)) return;
     setUpdateState("正在下载并安装更新…");
     try { await update.downloadAndInstall(); } catch (error) { setUpdateState(`更新失败：${error instanceof Error ? error.message : String(error)}`); }
   };
