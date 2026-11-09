@@ -1,6 +1,6 @@
 [package]
 name = "northstar-workbench"
-version = "0.1.8"
+version = "0.1.9"
 description = "A local-first personal workbench"
 authors = ["Northstar"]
 edition = "2021"
@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ammonia = "4.1.4"
 base64 = "0.22"
 fs2 = "0.4"
 imap = "2.4.1"

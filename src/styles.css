@@ -156,3 +156,11 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .version-indicator .theme-toggle { display:grid; width:28px; height:28px; place-items:center; padding:0; border-radius:50%; color:#5777a4; background:rgba(255,255,255,.55); font-size:17px; line-height:1; }
 .night .version-indicator .theme-toggle { color:#d3def0; background:rgba(61,76,98,.8); }
 .development-marker { position:fixed; z-index:101; top:12px; right:18px; }
+
+/* Mail content uses only sanitized, inert formatting from the native reader. */
+.message-html { overflow-wrap:anywhere; line-height:1.65; color:#34343a; }
+.message-html table { max-width:100%; border-collapse:collapse; }
+.message-html td, .message-html th { padding:4px 8px; border:1px solid rgba(128,140,160,.35); }
+.message-html pre { white-space:pre-wrap; }
+.night .message-html { color:#f5f1ea; }
+.module:not(.inbox-redesign) > h1, .module-heading { margin-bottom:24px; }

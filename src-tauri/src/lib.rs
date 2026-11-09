@@ -140,6 +140,7 @@ struct MailMessage {
     snippet: String,
     labels: Vec<String>,
     body: Option<String>,
+    html_body: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -473,19 +474,32 @@ fn gmail_header(value: &serde_json::Value, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn gmail_part_body(value: &serde_json::Value) -> Option<String> {
-    let mime_type = value["mimeType"].as_str().unwrap_or_default();
-    if mime_type == "text/plain" {
+// Only allow inert formatting; email HTML must never execute code or load remote resources.
+fn sanitize_mail_html(html: &str) -> Option<String> {
+    let tags = ["p", "div", "span", "b", "strong", "em", "i", "u", "s", "br", "hr", "ul", "ol", "li", "blockquote", "pre", "code", "table", "tbody", "thead", "tfoot", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"].into_iter().collect();
+    let cleaned = ammonia::Builder::default()
+        .tags(tags)
+        .generic_attributes(Default::default())
+        .tag_attributes(Default::default())
+        .link_rel(None)
+        .clean(html).to_string();
+    (!cleaned.trim().is_empty()).then_some(cleaned)
+}
+
+fn gmail_part_body(value: &serde_json::Value, wanted: &str) -> Option<String> {
+    if value["filename"].as_str().is_some_and(|name| !name.is_empty()) ||
+       value["headers"].as_array().is_some_and(|headers| headers.iter().any(|header| {
+           header["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case("content-disposition")) &&
+           header["value"].as_str().is_some_and(|value| value.to_ascii_lowercase().starts_with("attachment"))
+       })) { return None; }
+    if value["mimeType"].as_str().is_some_and(|mime| mime.eq_ignore_ascii_case(wanted)) {
         if let Some(data) = value["body"]["data"].as_str() {
-            return URL_SAFE_NO_PAD
-                .decode(data)
-                .ok()
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string());
+            return URL_SAFE_NO_PAD.decode(data).ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                .filter(|body| !body.trim().is_empty());
         }
     }
-    value["parts"]
-        .as_array()
-        .and_then(|parts| parts.iter().find_map(gmail_part_body))
+    value["parts"].as_array().and_then(|parts| parts.iter().find_map(|part| gmail_part_body(part, wanted)))
 }
 
 fn mail_message_from_gmail(value: &serde_json::Value, include_body: bool) -> MailMessage {
@@ -506,8 +520,9 @@ fn mail_message_from_gmail(value: &serde_json::Value, include_body: bool) -> Mai
             })
             .unwrap_or_default(),
         body: include_body
-            .then(|| gmail_part_body(&value["payload"]))
+            .then(|| gmail_part_body(&value["payload"], "text/plain"))
             .flatten(),
+        html_body: include_body.then(|| gmail_part_body(&value["payload"], "text/html").and_then(|html| sanitize_mail_html(&html))).flatten(),
     }
 }
 
@@ -1837,5 +1852,31 @@ mod tests {
         )
         .is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod html_mail_regression_tests {
+    use super::*;
+    #[test]
+    fn html_only_mail_is_displayable_and_inert() {
+        let encoded = URL_SAFE_NO_PAD.encode("<h2>优惠邮件</h2><p onclick='evil()'>欢迎</p><img src='https://tracker.invalid/pixel'><script>alert(1)</script><a href='https://example.invalid'>链接</a><style>body{display:none}</style>");
+        let input = serde_json::json!({"id":"x", "payload":{"mimeType":"text/html", "body":{"data":encoded}}});
+        let message = mail_message_from_gmail(&input, true);
+        let html = message.html_body.unwrap();
+        assert!(html.contains("优惠邮件") && html.contains("欢迎") && html.contains("链接"));
+        for unsafe_part in ["onclick", "script", "tracker.invalid", "href", "style", "alert(1)"] { assert!(!html.contains(unsafe_part), "{unsafe_part}"); }
+        assert!(message.body.is_none());
+        assert!(mail_message_from_gmail(&input, false).html_body.is_none());
+    }
+    #[test]
+    fn gmail_ignores_attachments_and_preserves_plain_fallback() {
+        let input = serde_json::json!({"payload":{"mimeType":"multipart/mixed","parts":[
+            {"mimeType":"text/html", "filename":"attachment.html", "body":{"data":URL_SAFE_NO_PAD.encode("attached")}},
+            {"mimeType":"text/plain", "body":{"data":URL_SAFE_NO_PAD.encode("实际正文")}}
+        ]}});
+        let message = mail_message_from_gmail(&input, true);
+        assert_eq!(message.body.as_deref(), Some("实际正文"));
+        assert!(message.html_body.is_none());
     }
 }

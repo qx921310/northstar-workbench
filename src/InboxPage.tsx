@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { desktopApi, type DesktopContext, type GmailSetup, type MailAccount, type MailCategory, type MailMessage } from "./desktop";
 
 type Provider = MailAccount["provider"];
-type Page = "home" | "tasks" | "trending" | "agents" | "notes" | "inbox" | "services";
 const defaults: Provider[] = ["gmail", "outlook", "qq", "imap"];
 const names: Record<Provider, string> = { gmail: "Gmail", outlook: "Outlook", qq: "QQ 邮箱", imap: "其他邮箱" };
 const categories: { id: MailCategory; label: string }[] = [
@@ -31,7 +30,7 @@ function readMailCache(key: string): MailMessage[] | null {
   } catch { return null; }
 }
 function writeMailCache(key: string, messages: MailMessage[]) {
-  try { localStorage.setItem(key, JSON.stringify(messages.slice(0, 20).map(({body: _body, ...metadata}) => metadata))); } catch { /* continue without persistent cache */ }
+  try { localStorage.setItem(key, JSON.stringify(messages.slice(0, 20).map(({body: _body, htmlBody: _htmlBody, ...metadata}) => metadata))); } catch { /* continue without persistent cache */ }
 }
 async function syncMessages(accountId: string, category: MailCategory, cached: MailMessage[]): Promise<MailMessage[]> {
   try {
@@ -45,7 +44,7 @@ async function syncMessages(accountId: string, category: MailCategory, cached: M
   }
 }
 
-export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
+export default function InboxPage({ desktop }: { desktop: DesktopContext | null }) {
   const [order, setOrder] = useState<Provider[]>(readOrder);
   const [provider, setProvider] = useState<Provider>("gmail");
   const [category, setCategory] = useState<MailCategory>("all");
@@ -124,7 +123,7 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
 
   return <section className="module inbox inbox-redesign">
     <div className="inbox-fixed">
-    <div className="inbox-header"><div><button className="back" onClick={() => onNavigate("home")}>‹ 首页</button><p className="eyebrow">YOUR MAIL · 统一收件箱</p><h1>我的收件箱</h1></div><span>把重要的消息，留在眼前。</span></div>
+    <div className="inbox-header"><h1>我的收件箱</h1></div>
     <div className="mail-provider-tabs" role="tablist" aria-label="邮箱类型，按住 Alt 加左右方向键可调整顺序">
       {order.map((item, index) => <button key={item} role="tab" aria-selected={provider === item} className={provider === item ? "active" : ""} draggable
         onDragStart={event => { dragged.current = item; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item); }}
@@ -142,7 +141,7 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
         {method === "app_password" ? <div className="gmail-connect"><p>输入 Gmail 地址和应用专用密码，连接后自动同步邮件。</p><div className="mail-fields"><input type="email" value={address} onChange={event => setAddress(event.target.value)} placeholder="Gmail 地址" aria-label="Gmail 地址" /><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="应用专用密码" aria-label="应用专用密码" /><button className="primary" disabled={busy || !address.trim() || !password.trim()} onClick={() => void connect()}>{busy ? "正在连接…" : "连接 Gmail"}</button></div><p>首次使用需要开启 Google 两步验证并生成密码。 <button type="button" className="gmail-help-link" onClick={() => void desktopApi.openGmailAppPasswords().catch(reason => setError(reasonText(reason)))}>打开 Google 设置 ↗</button></p></div> : <div className="gmail-connect">{!setup?.configured ? <><p>填写 Google 桌面客户端 ID。</p><div className="mail-fields"><input className="gmail-client-id" value={clientId} onChange={event => setClientId(event.target.value)} placeholder="123…apps.googleusercontent.com" /><button className="primary" disabled={busy || !clientId.trim()} onClick={() => void saveId()}>保存 Client ID</button></div></> : <><p>已配置 Client ID（{setup.clientIdHint}），授权令牌保存在本机。</p><div className="gmail-secret"><input type="password" autoComplete="off" value={clientSecret} onChange={event => setClientSecret(event.target.value)} aria-label="Google 客户端密钥" placeholder={setup.clientSecretConfigured ? "替换客户端密钥（可选）" : "Google 客户端密钥"} /><button disabled={busy || !clientSecret.trim()} onClick={() => void saveSecret()}>保存密钥</button></div><div className="gmail-actions"><button className="primary" disabled={busy} onClick={() => void connect()}>{busy ? "等待浏览器授权…" : "连接 Gmail"}</button>{busy && <button disabled={cancelling} onClick={() => { setCancelling(true); void desktopApi.cancelGmailAuth().catch(reason => { setError(reasonText(reason)); setCancelling(false); }); }}>取消授权</button>}</div></>}</div>}
         <p className="setup-note">凭据保存在 Windows 凭据管理器；邮件以只读方式访问。</p></section>}
       {error && <p role="alert" className="inline-error">{error}</p>}
-      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p><pre>{message.body || message.snippet || "此邮件没有可显示的纯文本正文。"}</pre></article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>显示最近 20 封 · 只读</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
+      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p>{message.htmlBody ? <div className="message-html" dangerouslySetInnerHTML={{ __html: message.htmlBody }} /> : <pre>{message.body || message.snippet || "此邮件没有可显示的正文。"}</pre>}</article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>显示最近 20 封 · 只读</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
     </>}
     </div>
   </section>;

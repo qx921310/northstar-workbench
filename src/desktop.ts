@@ -14,7 +14,7 @@ export type ServiceStatus = {
 };
 export type MailAccount = { id: string; provider: "gmail" | "outlook" | "qq" | "imap"; address: string; label: string; authType: "oauth" | "app_password"; connectionState: "setup_required" | "connected" | "error" };
 export type GmailSetup = { configured: boolean; clientIdHint?: string; clientSecretConfigured: boolean };
-export type MailMessage = { id: string; threadId: string; from: string; subject: string; date: string; snippet: string; labels: string[]; body?: string };
+export type MailMessage = { id: string; threadId: string; from: string; subject: string; date: string; snippet: string; labels: string[]; body?: string | null; htmlBody?: string | null };
 export type MailCategory = "inbox" | "all" | "unread" | "read" | "spam";
 export type MailSyncResult = { order: string[]; unread: string[]; newMessages: MailMessage[] };
 export type SidebarCounts = { openTasks: number; unreadMail: number };

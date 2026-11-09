@@ -67,13 +67,15 @@ fn connect(address: &str, password: &str) -> Result<MailAccount, String> {
 
 fn parse_message(id: String, bytes: &[u8], full: bool) -> Result<MailMessage, String> {
     let parsed = mailparse::parse_mail(bytes).map_err(|_| "邮件格式无法解析".to_string())?;
-    fn body(part: &mailparse::ParsedMail<'_>) -> Option<String> {
-        if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") && part.subparts.is_empty() {
-            return part.get_body().ok();
+    fn body(part: &mailparse::ParsedMail<'_>, wanted: &str) -> Option<String> {
+        let disposition = part.get_content_disposition();
+        if disposition.disposition == mailparse::DispositionType::Attachment || disposition.params.contains_key("filename") || part.ctype.mimetype.eq_ignore_ascii_case("message/rfc822") { return None; }
+        if part.ctype.mimetype.eq_ignore_ascii_case(wanted) && part.subparts.is_empty() {
+            return part.get_body().ok().filter(|body| !body.trim().is_empty());
         }
-        part.subparts.iter().find_map(body)
+        part.subparts.iter().find_map(|child| body(child, wanted))
     }
-    Ok(MailMessage { thread_id: id.clone(), id, from: parsed.headers.get_first_value("From").unwrap_or_default(), subject: parsed.headers.get_first_value("Subject").unwrap_or_default(), date: parsed.headers.get_first_value("Date").unwrap_or_default(), snippet: String::new(), labels: vec![], body: if full { body(&parsed) } else { None } })
+    Ok(MailMessage { thread_id: id.clone(), id, from: parsed.headers.get_first_value("From").unwrap_or_default(), subject: parsed.headers.get_first_value("Subject").unwrap_or_default(), date: parsed.headers.get_first_value("Date").unwrap_or_default(), snippet: String::new(), labels: vec![], body: if full { body(&parsed, "text/plain") } else { None }, html_body: if full { body(&parsed, "text/html").and_then(|html| super::sanitize_mail_html(&html)) } else { None } })
 }
 
 pub(super) fn list(account: &MailAccount, category: &str) -> Result<Vec<MailMessage>, String> {
@@ -219,5 +221,22 @@ mod tests {
         let message = parse_message("1-2".into(), mail, true).unwrap();
         assert_eq!(message.subject, "测试");
         assert_eq!(message.body.as_deref(), Some("hello"));
+    }
+}
+
+#[cfg(test)]
+mod html_regression_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    #[test]
+    fn mime_html_only_and_attachments_are_handled() {
+        let encoded = STANDARD.encode("<h2>旅行优惠</h2><p>你好</p><img src='https://tracker.invalid/a'>");
+        let raw = format!("MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=note.txt\r\n\r\nNOT BODY\r\n--x\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{encoded}\r\n--x--\r\n");
+        let message = parse_message("1-1".into(), raw.as_bytes(), true).unwrap();
+        assert!(message.body.is_none());
+        let html = message.html_body.unwrap();
+        assert!(html.contains("旅行优惠") && html.contains("你好"));
+        assert!(!html.contains("tracker.invalid"));
+        assert!(parse_message("1-1".into(), raw.as_bytes(), false).unwrap().html_body.is_none());
     }
 }
