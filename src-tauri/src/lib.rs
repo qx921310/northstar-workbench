@@ -153,6 +153,13 @@ struct MailSyncResult {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct MailBatchFailure { id: String, error: String }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailBatchResult { succeeded: Vec<String>, failed: Vec<MailBatchFailure> }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SidebarCounts {
     open_tasks: usize,
     unread_mail: usize,
@@ -1499,6 +1506,32 @@ async fn mark_mail_read(account_id: String, message_id: String, category: String
 }
 
 #[tauri::command]
+async fn batch_mail_action(account_id: String, message_ids: Vec<String>, category: String, action: String) -> Result<MailBatchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let category = valid_mail_category(&category)?;
+        if !matches!(action.as_str(), "read" | "trash" | "spam") || message_ids.is_empty() || message_ids.len() > 20 || message_ids.iter().any(|id| id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) { return Err("邮件操作参数无效".into()); }
+        if action == "spam" && category == "spam" { return Err("邮件已在垃圾邮件文件夹中".into()); }
+        let account = read_mail_accounts()?.into_iter().find(|a| a.id == account_id && a.provider == "gmail" && a.connection_state == "connected").ok_or("邮箱账户不存在或尚未连接")?;
+        if account.auth_type == "app_password" { return imap_mail::batch(&account, &message_ids, category, &action); }
+        let client_id = read_mail_settings()?.gmail_client_id.ok_or("请先配置 Google OAuth Client ID")?;
+        let token = refresh_gmail_token(&account.id, &client_id)?;
+        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).build().map_err(|_| "无法初始化 Gmail 连接")?;
+        let mut succeeded = Vec::new(); let mut failed = Vec::new();
+        for id in &message_ids {
+            let path = if action == "trash" { "trash" } else { "modify" };
+            let request = client.post(format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/{path}")).bearer_auth(&token.access_token);
+            let request = if action == "read" { request.json(&serde_json::json!({"removeLabelIds":["UNREAD"]})) } else if action == "spam" { request.json(&serde_json::json!({"addLabelIds":["SPAM"],"removeLabelIds":["INBOX"]})) } else { request };
+            match request.send() {
+                Ok(response) if response.status().is_success() => succeeded.push(id.clone()),
+                Ok(response) if response.status() == reqwest::StatusCode::FORBIDDEN => failed.push(MailBatchFailure { id:id.clone(), error:"授权不足，请重新连接 Gmail 并授权".into() }),
+                _ => failed.push(MailBatchFailure { id:id.clone(), error:"操作未确认，请刷新并检查邮箱".into() }),
+            }
+        }
+        Ok(MailBatchResult { succeeded, failed })
+    }).await.map_err(|_| "邮件操作任务失败".to_string())?
+}
+
+#[tauri::command]
 fn register_custom_service(
     name: String,
     target: String,
@@ -1616,6 +1649,7 @@ pub fn run() {
             sync_mail_messages,
             get_mail_message,
             mark_mail_read,
+            batch_mail_action,
             register_custom_service,
             remove_custom_service
         ])

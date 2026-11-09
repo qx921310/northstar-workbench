@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][ValidateRange(1, 2147483647)][int]$Revision
 )
 $ErrorActionPreference = 'Stop'
@@ -7,7 +7,7 @@ Set-Location $root
 if (git status --porcelain) { throw '源码工作区有未提交的变更，请先完成审查和提交。' }
 $shellVersion = (Get-Content -Raw 'src-tauri/tauri.conf.json' | ConvertFrom-Json).version
 if ($shellVersion -notmatch '^\d+\.\d+\.\d+$') { throw '应用版本格式无效。' }
-$bundle = Join-Path $root "src-tauri/target/ui-release/ui-$Revision.zip"
+$bundle = Join-Path $root "src-tauri/target/ui-release/v$shellVersion/ui-$Revision.zip"
 $signature = "$bundle.sig"
 if (-not (Test-Path -LiteralPath $bundle) -or -not (Test-Path -LiteralPath $signature)) { throw '请先生成并校验界面更新包及签名。' }
 $lines = @('protocol=https','host=github.com','username=qx921310','') | git -c credential.interactive=never credential fill
@@ -27,6 +27,10 @@ try {
         $release = Invoke-RestMethod -Method Post -Headers $headers -Uri $base -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
     }
     if (-not $release.prerelease) { throw '界面资源发布必须是预发布版，避免覆盖正式版更新。' }
+    $publishedRevisions = @($release.assets | ForEach-Object { if ($_.name -match '^ui-(\d+)\.zip$') { $n = [int]$Matches[1]; if ($release.assets.name -contains "ui-$n.zip.sig") { $n } } })
+    $highest = if ($publishedRevisions.Count) { ($publishedRevisions | Measure-Object -Maximum).Maximum } else { 0 }
+    if ($Revision -ne ($highest + 1)) { throw "界面版本须连续递增，当前下一修订号应为 $($highest + 1)。" }
+
     foreach ($file in @($bundle, $signature)) {
         $name = [IO.Path]::GetFileName($file)
         $existing = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1

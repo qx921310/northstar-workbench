@@ -52,7 +52,7 @@ export default function App() {
   useEffect(() => {
     if (!desktop || desktop.environment === "development") return;
     let active = true;
-    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(value => { if (active) setVersion(value); }).catch(() => undefined);
+    const shellVersion = import("@tauri-apps/api/app").then(({ getVersion }) => getVersion());
     let nativeUpdate: Update | null = null, checkingNative = false, lastNativeCheck = 0;
     const closeUpdate = (item: Update | null) => { if (item) void item.close().catch(() => undefined); };
     const checkNative = async () => {
@@ -77,7 +77,13 @@ export default function App() {
       catch (error) { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); }
       finally { checkingUi = false; }
     };
-    void desktopApi.uiUpdateReady().then(() => { if (!active) return; uiReady = true; void checkUi(); }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
+    void Promise.all([shellVersion, desktopApi.uiUpdateReady()]).then(([base, revision]) => {
+      if (!active) return;
+      const parts = base.split(".").map(Number);
+      if (parts.length === 3 && parts.every(Number.isSafeInteger) && Number.isSafeInteger(revision) && revision >= 0) setVersion(`${parts[0]}.${parts[1]}.${parts[2] + revision}`);
+      else setVersion(base);
+      uiReady = true; void checkUi();
+    }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
     const checkUpdates = () => { void checkNative(); void checkUi(); };
     const timer = window.setInterval(checkUpdates, 5 * 60 * 1000);
     window.addEventListener("focus", checkUpdates);
@@ -144,7 +150,7 @@ function compactModuleHeader(event: React.UIEvent<HTMLElement>) {
 function TasksPage({ desktop }: { desktop: DesktopContext | null }) {
   const [tasks, setTasks] = useState<ObsidianTask[]>([]);
   const [title, setTitle] = useState("");
-  const [details, setDetails] = useState("");
+  const [details, setDetails] = useState<string[]>([""]);
   const [editing, setEditing] = useState<ObsidianTask | null>(null);
   const [remind, setRemind] = useState(false); const [reminderAt, setReminderAt] = useState("");
   const [error, setError] = useState("");
@@ -159,19 +165,25 @@ function TasksPage({ desktop }: { desktop: DesktopContext | null }) {
   const add = async () => {
     if (!title.trim()) return;
     if (remind && (!reminderAt || new Date(reminderAt).getTime() <= Date.now())) { setError("请选择当前之后的提醒时间并确认"); return; }
-    try { if (editing) await desktopApi.changeTask(editing, title, details, remind ? reminderAt : undefined); else await desktopApi.createTask(title, details, remind ? reminderAt : undefined); setTitle(""); setDetails(""); setEditing(null); setRemind(false); setReminderAt(""); setError(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法保存待办"); }
+    const text = details.map(item => item.trim()).filter(Boolean).join("\n");
+    try { if (editing) await desktopApi.changeTask(editing, title, text, remind ? reminderAt : undefined); else await desktopApi.createTask(title, text, remind ? reminderAt : undefined); setTitle(""); setDetails([""]); setEditing(null); setRemind(false); setReminderAt(""); setError(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法保存待办"); }
   };
   const toggle = async (task: ObsidianTask) => {
     try { await desktopApi.setTaskCompletion(task.file, task.line, !task.completed); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法更新待办"); }
   };
-  const edit = (task: ObsidianTask) => { setEditing(task); setTitle(task.title); setDetails(task.details); setRemind(Boolean(task.reminderAt)); setReminderAt(task.reminderAt || ""); setCreating(true); };
+  const edit = (task: ObsidianTask) => { setEditing(task); setTitle(task.title); setDetails(task.details ? task.details.split(/\r?\n/) : [""]); setRemind(Boolean(task.reminderAt)); setReminderAt(task.reminderAt || ""); setCreating(true); };
   const remove = async (task: ObsidianTask) => { if (!window.confirm(`删除“${task.title}”？此操作会修改 Obsidian 中的待办文件。`)) return; try { await desktopApi.changeTask(task); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法删除待办"); } };
   const open = tasks.filter(task => !task.completed); const done = tasks.filter(task => task.completed);
-  return <section className="module tasks-module" onScroll={compactModuleHeader}><div className="module-sticky"><span>我的待办</span></div><h1>我的待办</h1><DesktopRequired desktop={desktop} />{desktop && <><div className="tasks-board"><TaskGroup title="进行中" tasks={open} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><TaskGroup title="已完成" tasks={done} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><section className="task-group task-new"><h2>{editing ? "编辑待办" : "新增待办"}</h2>{creating ? <div className="task-form"><label>标题<input value={title} onChange={event => setTitle(event.target.value)} placeholder="待办标题" /></label><label>事项<textarea value={details} onChange={event => setDetails(event.target.value)} placeholder="补充事项内容" /></label><div className="task-form-actions"><label><input type="checkbox" checked={remind} onChange={event => { setRemind(event.target.checked); setReminderAt(""); }} /> 是否提醒</label><button className="primary" onClick={() => void add()}>{editing ? "保存修改" : "确认创建"}</button></div>{remind && <ReminderPicker value={reminderAt} onChange={setReminderAt} />}</div> : <button className="task-add" onClick={() => setCreating(true)}><span>＋</span>添加一件事</button>}</section></div>{error && <p className="inline-error">{error}</p>}</>}</section>;
+  return <section className="module tasks-module" onScroll={compactModuleHeader}><div className="module-sticky"><span>我的待办</span></div><h1>我的待办</h1><DesktopRequired desktop={desktop} />{desktop && <><div className="tasks-board"><TaskGroup title="进行中" tasks={open} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><TaskGroup title="已完成" tasks={done} loading={loading} onToggle={toggle} onEdit={edit} onDelete={remove} /><section className="task-group task-new"><h2>{editing ? "编辑待办" : "新增待办"}</h2>{creating ? <div className="task-form"><label>标题<input value={title} onChange={event => setTitle(event.target.value)} placeholder="待办标题" /></label><div className="task-details"><span>事项</span>{details.map((item, index) => <div className="task-detail-entry" key={index}><input aria-label={`事项 ${index + 1}`} value={item} onChange={event => setDetails(current => current.map((value, i) => i === index ? event.target.value : value))} placeholder="补充事项内容" /><div className="task-detail-buttons"><button type="button" aria-label={`在事项 ${index + 1} 后增加`} onClick={() => setDetails(current => [...current.slice(0, index + 1), "", ...current.slice(index + 1)])}>＋</button>{index > 0 && <button type="button" aria-label={`删除事项 ${index + 1}`} onClick={() => setDetails(current => current.filter((_, i) => i !== index))}>−</button>}</div></div>)}</div><div className="task-form-actions"><label><input type="checkbox" checked={remind} onChange={event => { setRemind(event.target.checked); setReminderAt(""); }} /> 是否提醒</label><button className="primary" onClick={() => void add()}>{editing ? "保存修改" : "确认创建"}</button></div>{remind && <ReminderPicker value={reminderAt} onChange={setReminderAt} />}</div> : <button className="task-add" onClick={() => setCreating(true)}><span>＋</span>添加一件事</button>}</section></div>{error && <p className="inline-error">{error}</p>}</>}</section>;
+}
+
+function TaskDetails({ details }: { details: string }) {
+  const items = details.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  return items.length > 1 ? <ol className="task-detail-list">{items.map((item, index) => <li key={index}>{item}</li>)}</ol> : items.length ? <small>{items[0]}</small> : null;
 }
 
 function TaskGroup({ title, tasks, loading, onToggle, onEdit, onDelete }: { title: string; tasks: ObsidianTask[]; loading: boolean; onToggle: (task: ObsidianTask) => void; onEdit: (task: ObsidianTask) => void; onDelete: (task: ObsidianTask) => void }) {
-  return <section className="task-group"><h2>{title}{tasks.length > 0 && <small>{tasks.length}</small>}</h2><div className="module-list">{loading ? <div className="task-row">正在读取 Obsidian 待办…</div> : tasks.length === 0 ? <div className="task-row muted">暂无任务</div> : tasks.map(task => <div className="task-row" key={task.id}><input aria-label={`完成 ${task.title}`} type="checkbox" checked={task.completed} onChange={() => void onToggle(task)} /><span><b>{task.title}</b>{task.details && <small>{task.details}</small>}<small>{task.reminderAt ? `提醒 · ${task.reminderAt.replace("T", " ")} · ` : ""}{task.file}</small>{task.file.replaceAll("\\", "/") === "待办事项/Northstar.md" && <small><button onClick={() => onEdit(task)}>编辑</button> · <button onClick={() => void onDelete(task)}>删除</button></small>}</span></div>)}</div></section>;
+  return <section className="task-group"><h2>{title}{tasks.length > 0 && <small>{tasks.length}</small>}</h2><div className="module-list">{loading ? <div className="task-row">正在读取 Obsidian 待办…</div> : tasks.length === 0 ? <div className="task-row muted">暂无任务</div> : tasks.map(task => <div className="task-row" key={task.id}><input aria-label={`完成 ${task.title}`} type="checkbox" checked={task.completed} onChange={() => void onToggle(task)} /><span><b>{task.title}</b>{task.details && <TaskDetails details={task.details} />}<small>{task.reminderAt ? `提醒 · ${task.reminderAt.replace("T", " ")} · ` : ""}{task.file}</small>{task.file.replaceAll("\\", "/") === "待办事项/Northstar.md" && <small><button onClick={() => onEdit(task)}>编辑</button> · <button onClick={() => void onDelete(task)}>删除</button></small>}</span></div>)}</div></section>;
 }
 
 function ReminderPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -207,14 +219,26 @@ function NotesPage({ desktop }: { desktop: DesktopContext | null }) {
   </section>;
 }
 
+const TRENDING_CACHE_KEY = "northstar.github-trending.v1";
+function readTrendingCache(): {items: Repository[]; savedAt: number} | null {
+  try {
+    const cache = JSON.parse(localStorage.getItem(TRENDING_CACHE_KEY) || "null");
+    if (!cache || !Array.isArray(cache.items) || cache.items.length > 10 || !Number.isFinite(cache.savedAt) || cache.savedAt > Date.now() || !cache.items.every((item: Repository) => typeof item.id === "number" && typeof item.full_name === "string" && typeof item.html_url === "string" && /^https:\/\/github\.com\//.test(item.html_url) && typeof item.stargazers_count === "number")) return null;
+    return cache;
+  } catch { return null; }
+}
+function isToday(time: number) { return new Date(time).toDateString() === new Date().toDateString(); }
 function TrendingPage() {
-  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [cached] = useState(readTrendingCache);
+  const [repositories, setRepositories] = useState<Repository[]>(cached?.items || []);
   const [resultPage, setResultPage] = useState(0);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [updatedAt, setUpdatedAt] = useState("");
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(cached ? "ready" : "loading");
+  const [updatedAt, setUpdatedAt] = useState(cached ? new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(cached.savedAt) : "");
+  const [refreshError, setRefreshError] = useState("");
 
   const loadTrending = async () => {
-    setStatus("loading");
+    if (!repositories.length) setStatus("loading");
+    setRefreshError("");
     const after = new Date();
     after.setDate(after.getDate() - 30);
     const createdAfter = after.toISOString().slice(0, 10);
@@ -224,18 +248,20 @@ function TrendingPage() {
       });
       if (!response.ok) throw new Error(`GitHub API ${response.status}`);
       const payload = await response.json() as { items: Repository[] };
+      const savedAt = Date.now();
       setRepositories(payload.items);
+      try { localStorage.setItem(TRENDING_CACHE_KEY, JSON.stringify({items: payload.items, savedAt})); } catch { /* session still works */ }
       setResultPage(0);
-      setUpdatedAt(new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date()));
+      setUpdatedAt(new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(savedAt));
       setStatus("ready");
     } catch {
-      setStatus("error");
+      if (repositories.length) { setStatus("ready"); setRefreshError("更新失败，正在显示上次的结果。"); } else setStatus("error");
     }
   };
 
-  useEffect(() => { void loadTrending(); }, []);
+  useEffect(() => { if (!cached || !isToday(cached.savedAt)) void loadTrending(); }, []);
 
-  return <section className="module trending" onScroll={compactModuleHeader}><div className="module-sticky"><span>GitHub 热点</span></div><div className="module-heading"><div><h1>GitHub 热点</h1></div><button className="refresh" onClick={() => void loadTrending()} disabled={status === "loading"}>{status === "loading" ? "加载中…" : "刷新"}</button></div>{status === "error" ? <div className="empty-state"><b>暂时无法连接 GitHub</b><p>请检查网络，稍后再次刷新。</p><button className="primary" onClick={() => void loadTrending()}>重试</button></div> : <div className="repository-list" aria-live="polite">{status === "loading" && Array.from({ length: 4 }).map((_, index) => <div className="repository skeleton" key={index}><span></span><div><b></b><p></p></div></div>)}{status === "ready" && repositories.slice(resultPage * 4, resultPage * 4 + 4).map((repository, index) => <article className="repository" key={repository.id}><span className="rank">{resultPage * 4 + index + 1}</span><div><a href={repository.html_url} target="_blank" rel="noreferrer">{repository.full_name}</a><p>{repository.description || "暂无项目描述"}</p><small>{repository.language || "未标记语言"} · ★ {repository.stargazers_count.toLocaleString()}</small></div><a className="repo-open" href={repository.html_url} target="_blank" rel="noreferrer">打开 ↗</a></article>)}{status === "ready" && <div className="pagination"><span>更新于 {updatedAt} · GitHub API</span><button disabled={resultPage === 0} onClick={() => setResultPage(resultPage - 1)}>上一页</button><span>{resultPage + 1} / {Math.max(1, Math.ceil(repositories.length / 4))}</span><button disabled={(resultPage + 1) * 4 >= repositories.length} onClick={() => setResultPage(resultPage + 1)}>下一页</button></div>}</div>}</section>;
+  return <section className="module trending" onScroll={compactModuleHeader}><div className="module-sticky"><span>GitHub 热点</span></div><div className="module-heading"><div><h1>GitHub 热点</h1></div><button className="refresh" onClick={() => void loadTrending()} disabled={status === "loading"}>{status === "loading" ? "加载中…" : "刷新"}</button></div>{refreshError && <p className="inline-error" role="status">{refreshError}</p>}{status === "error" ? <div className="empty-state"><b>暂时无法连接 GitHub</b><p>请检查网络，稍后再次刷新。</p><button className="primary" onClick={() => void loadTrending()}>重试</button></div> : <div className="repository-list" aria-live="polite">{status === "loading" && Array.from({ length: 4 }).map((_, index) => <div className="repository skeleton" key={index}><span></span><div><b></b><p></p></div></div>)}{status === "ready" && repositories.slice(resultPage * 4, resultPage * 4 + 4).map((repository, index) => <article className="repository" key={repository.id}><span className="rank">{resultPage * 4 + index + 1}</span><div><a href={repository.html_url} target="_blank" rel="noreferrer">{repository.full_name}</a><p>{repository.description || "暂无项目描述"}</p><small>{repository.language || "未标记语言"} · ★ {repository.stargazers_count.toLocaleString()}</small></div><a className="repo-open" href={repository.html_url} target="_blank" rel="noreferrer">打开 ↗</a></article>)}{status === "ready" && <div className="pagination"><span>更新于 {updatedAt} · GitHub API</span><button disabled={resultPage === 0} onClick={() => setResultPage(resultPage - 1)}>上一页</button><span>{resultPage + 1} / {Math.max(1, Math.ceil(repositories.length / 4))}</span><button disabled={(resultPage + 1) * 4 >= repositories.length} onClick={() => setResultPage(resultPage + 1)}>下一页</button></div>}</div>}</section>;
 }
 
 function ServicesPage({ desktop }: { desktop: DesktopContext | null }) {

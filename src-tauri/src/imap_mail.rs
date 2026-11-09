@@ -171,6 +171,42 @@ pub(super) fn mark_read(account: &MailAccount, id: &str, category: &str) -> Resu
     result
 }
 
+fn copy_to_special<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>, uid: u32, folder: &str) -> Result<(), String> {
+    // Gmail special folders move by COPY; do not use \Deleted or EXPUNGE.
+    session.uid_copy(uid.to_string(), folder).map_err(|_| "移动未确认，请刷新并检查邮箱".to_string())?;
+    let remaining = session.uid_search(format!("UID {uid}")).map_err(|_| "移动后无法确认，请刷新并检查邮箱".to_string())?;
+    if remaining.contains(&uid) { Err("已发送移动请求，但邮件仍在原文件夹，请刷新并检查邮箱".into()) } else { Ok(()) }
+}
+// Never use EXPUNGE or the account's auto-delete setting for a trash operation.
+pub(super) fn batch(account: &MailAccount, ids: &[String], category: &str, action: &str) -> Result<super::MailBatchResult, String> {
+    let parsed: Result<Vec<(u32,u32)>, String> = ids.iter().map(|id| {
+        let (validity, uid) = id.split_once('-').ok_or("邮件标识无效")?;
+        let validity = validity.parse::<u32>().map_err(|_| "邮件标识无效")?;
+        let uid = uid.parse::<u32>().map_err(|_| "邮件标识无效")?;
+        if uid == 0 { return Err("邮件标识无效".into()); }
+        Ok((validity, uid))
+    }).collect();
+    let parsed = parsed?;
+    let (mut session, actual) = open(account, category, true)?;
+    if parsed.iter().any(|(validity, _)| *validity != actual) { return Err("邮箱已发生变化，请刷新列表".into()); }
+    let destination = if action == "read" { None } else {
+        let flag = if action == "trash" { "\\Trash" } else { "\\Junk" };
+        let folders = session.list(None, Some("*")).map_err(|_| "无法查询邮箱文件夹")?;
+        Some(folders.iter().find(|folder| folder.attributes().iter().any(|attr| matches!(attr, imap::types::NameAttribute::Custom(value) if value.eq_ignore_ascii_case(flag))))
+            .map(|folder| folder.name().to_string()).ok_or("找不到目标文件夹，请检查 Gmail IMAP 设置")?)
+    };
+    let mut succeeded = Vec::new(); let mut failed = Vec::new();
+    for (id, (_, uid)) in ids.iter().zip(parsed) {
+        let result = session.uid_search(format!("UID {uid}"))
+            .map_err(|_| "无法确认邮件是否存在，请刷新后重试".to_string())
+            .and_then(|found| if found.contains(&uid) { Ok(()) } else { Err("邮件不存在或已移动，请刷新列表".to_string()) })
+            .and_then(|_| if let Some(folder) = &destination { copy_to_special(&mut session, uid, folder) } else { store_seen(&mut session, uid) });
+        match result { Ok(()) => succeeded.push(id.clone()), Err(error) => failed.push(super::MailBatchFailure { id: id.clone(), error }) }
+    }
+    let _ = session.logout();
+    Ok(super::MailBatchResult { succeeded, failed })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +265,23 @@ mod tests {
         let mut session = client.login("synthetic", "synthetic").ok().unwrap();
         store_seen(&mut session, 42).unwrap();
         assert!(String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("UID STORE 42 +FLAGS.SILENT (\\Seen)"));
+    }
+    #[test]
+    fn trash_copy_never_sends_delete_or_expunge() {
+        let responses = b"* OK hello\r\na1 OK logged in\r\na2 OK copied\r\n* SEARCH\r\na3 OK search completed\r\n";
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(RecordingStream { input: Cursor::new(responses.to_vec()), output: output.clone() });
+        client.read_greeting().unwrap(); let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        copy_to_special(&mut session, 42, "[Gmail]/Trash").unwrap();
+        let commands = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(commands.contains("UID COPY 42")); assert!(!commands.contains("EXPUNGE")); assert!(!commands.contains("\\Deleted"));
+    }
+    #[test]
+    fn copy_requires_confirmation_that_source_disappeared() {
+        let responses = b"* OK hello\r\na1 OK logged in\r\na2 OK copied\r\n* SEARCH 42\r\na3 OK search completed\r\n";
+        let mut client = imap::Client::new(MockStream(Cursor::new(responses.to_vec())));
+        client.read_greeting().unwrap(); let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        assert!(copy_to_special(&mut session, 42, "[Gmail]/Trash").is_err());
     }
     #[test]
     fn recognizes_gmail_special_use_folders() {

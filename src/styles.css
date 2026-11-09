@@ -230,3 +230,22 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .workspace > main > .module:not(.inbox-redesign):not(.notes-module)::before,
 .workspace > main > .module:not(.inbox-redesign):not(.notes-module)::after { content:""; display:block; flex:1 0 0; }
 .workspace > main > .module:not(.inbox-redesign):not(.notes-module) > * { flex-shrink:0; }
+.task-details { display:grid; gap:6px; color:#64748b; font-size:12px; }
+.task-detail-entry { display:flex; align-items:stretch; gap:7px; }
+.task-detail-entry input { flex:1; }
+.task-detail-buttons { display:flex; flex-direction:column; gap:3px; }
+.task-detail-buttons button { flex:1; min-width:30px; border:0; border-radius:8px; color:#2866bd; background:#e6f0ff; font-size:15px; line-height:1; }
+.task-detail-list { margin:3px 0; padding-left:18px; color:#68788f; font-size:11px; line-height:1.55; }
+.night .task-details,.night .task-detail-list { color:#d1dbea; }
+.night .task-detail-buttons button { color:#d6e8ff; background:#364b66; }
+.mail-batch-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:0 3px 12px; font-size:12px; color:#64748b; }
+.mail-batch-toolbar label { display:flex; align-items:center; gap:6px; }
+.mail-batch-toolbar > span { margin-right:auto; }
+.mail-batch-toolbar button { border:0; border-radius:9px; padding:7px 10px; color:#2866bd; background:#e6f0ff; }
+.mail-batch-toolbar button:disabled { opacity:.45; }
+.mail-select-row { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:start; border-bottom:1px solid #e8e8ec; }
+.mail-select-row:last-child { border-bottom:0; }
+.mail-select-row > input { justify-self:center; margin-top:19px; accent-color:#0a84ff; }
+.inbox-redesign .message-list .mail-select-row > button { border-bottom:0; }
+.night .mail-batch-toolbar { color:#d1dbea; }.night .mail-batch-toolbar button { color:#d6e8ff; background:#364b66; }.night .mail-select-row { border-color:#3d4047; }
+.task-detail-buttons button { min-height:22px; }
