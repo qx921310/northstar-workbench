@@ -1,4 +1,4 @@
-use super::{is_development, read_mail_accounts, write_mail_accounts, MailAccount, MailMessage};
+use super::{is_development, read_mail_accounts, write_mail_accounts, MailAccount, MailMessage, MailSyncResult};
 use mailparse::MailHeaderMap;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -96,6 +96,46 @@ pub(super) fn list(account: &MailAccount, category: &str) -> Result<Vec<MailMess
     Ok(result)
 }
 
+pub(super) fn sync(account: &MailAccount, category: &str, known_ids: &[String]) -> Result<MailSyncResult, String> {
+    let (mut session, validity) = open(account, category)?;
+    let result = sync_folder(&mut session, validity, category, known_ids)?;
+    let _ = session.logout();
+    Ok(result)
+}
+
+fn sync_folder<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>, validity: u32, category: &str, known_ids: &[String]) -> Result<MailSyncResult, String> {
+    let query = match category { "unread" => "UNSEEN", "read" => "SEEN", _ => "ALL" };
+    let mut uids: Vec<u32> = session.uid_search(query).map_err(|_| "无法查询 Gmail 邮件".to_string())?.into_iter().collect();
+    uids.sort_unstable_by(|a, b| b.cmp(a)); uids.truncate(20);
+    let mut order = Vec::new(); let mut unread = Vec::new(); let mut missing = Vec::new();
+    if !uids.is_empty() {
+        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let flags = session.uid_fetch(set, "(UID FLAGS)").map_err(|_| "无法读取邮件状态".to_string())?;
+        for uid in uids {
+            if let Some(item) = flags.iter().find(|item| item.uid == Some(uid)) {
+                let id = format!("{validity}-{uid}");
+                if !item.flags().iter().any(|flag| matches!(flag, imap::types::Flag::Seen)) { unread.push(id.clone()); }
+                if !known_ids.contains(&id) { missing.push(uid); }
+                order.push(id);
+            }
+        }
+    }
+    let mut new_messages = Vec::new();
+    if !missing.is_empty() {
+        let set = missing.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let headers = session.uid_fetch(set, "(UID BODY.PEEK[HEADER]<0.65536>)").map_err(|_| "无法读取新增邮件".to_string())?;
+        for uid in missing {
+            if let Some(header) = headers.iter().find(|item| item.uid == Some(uid)).and_then(|item| item.header()) {
+                let id = format!("{validity}-{uid}");
+                let mut message = parse_message(id.clone(), header, false)?;
+                if unread.contains(&id) { message.labels.push("UNREAD".into()); }
+                new_messages.push(message);
+            }
+        }
+    }
+    Ok(MailSyncResult { order, unread, new_messages })
+}
+
 pub(super) fn message(account: &MailAccount, id: &str, category: &str) -> Result<MailMessage, String> {
     let (validity, uid) = id.split_once('-').ok_or_else(|| "邮件标识无效".to_string())?;
     let validity: u32 = validity.parse().map_err(|_| "邮件标识无效".to_string())?;
@@ -123,6 +163,43 @@ mod tests {
     impl Write for MockStream {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
         fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    struct RecordingStream { input: Cursor<Vec<u8>>, output: std::sync::Arc<std::sync::Mutex<Vec<u8>>> }
+    impl Read for RecordingStream { fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> { self.input.read(buf) } }
+    impl Write for RecordingStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { self.output.lock().unwrap().extend_from_slice(buf); Ok(buf.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn sync_fetches_headers_only_for_new_messages_and_refreshes_flags() {
+        let header = "From: new@example.com\r\nSubject: New mail\r\n\r\n";
+        let responses = format!("* OK hello\r\na1 OK logged in\r\n* SEARCH 10 11\r\na2 OK SEARCH completed\r\n* 1 FETCH (UID 10 FLAGS (\\Seen))\r\n* 2 FETCH (UID 11 FLAGS ())\r\na3 OK FETCH completed\r\n* 2 FETCH (UID 11 BODY[HEADER]<0> {{{}}}\r\n{})\r\na4 OK FETCH completed\r\n", header.len(), header);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(RecordingStream { input: Cursor::new(responses.into_bytes()), output: output.clone() });
+        client.read_greeting().unwrap();
+        let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        let result = sync_folder(&mut session, 42, "all", &["42-10".into()]).unwrap();
+        assert_eq!(result.order, ["42-11", "42-10"]);
+        assert_eq!(result.unread, ["42-11"]);
+        assert_eq!(result.new_messages.len(), 1);
+        assert_eq!(result.new_messages[0].subject, "New mail");
+        let commands = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(commands.contains("UID FETCH 11 (UID BODY.PEEK[HEADER]"));
+        assert!(!commands.contains("UID FETCH 10 (UID BODY.PEEK[HEADER]"));
+    }
+    #[test]
+    fn sync_drops_removed_items_and_updates_seen_without_downloading_headers() {
+        let responses = b"* OK hello\r\na1 OK logged in\r\n* SEARCH 11\r\na2 OK SEARCH completed\r\n* 1 FETCH (UID 11 FLAGS (\\Seen))\r\na3 OK FETCH completed\r\n";
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(RecordingStream { input: Cursor::new(responses.to_vec()), output: output.clone() });
+        client.read_greeting().unwrap();
+        let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        let result = sync_folder(&mut session, 42, "all", &["42-10".into(), "42-11".into()]).unwrap();
+        assert_eq!(result.order, ["42-11"]);
+        assert!(result.unread.is_empty() && result.new_messages.is_empty());
+        assert!(!String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("BODY.PEEK"));
     }
 
     #[test]

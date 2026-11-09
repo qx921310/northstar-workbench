@@ -16,6 +16,7 @@ export type MailAccount = { id: string; provider: "gmail" | "outlook" | "qq" | "
 export type GmailSetup = { configured: boolean; clientIdHint?: string; clientSecretConfigured: boolean };
 export type MailMessage = { id: string; threadId: string; from: string; subject: string; date: string; snippet: string; labels: string[]; body?: string };
 export type MailCategory = "inbox" | "all" | "unread" | "read" | "spam";
+export type MailSyncResult = { order: string[]; unread: string[]; newMessages: MailMessage[] };
 export type SidebarCounts = { openTasks: number; unreadMail: number };
 export type CustomService = { id: string; name: string; target: string; kind: "http" | "tcp" };
 
@@ -70,5 +71,6 @@ export const desktopApi = {
   openGmailAppPasswords: () => invoke<void>("open_gmail_app_passwords"),
   cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
   listMailMessages: (accountId: string, category: MailCategory = "inbox") => invoke<MailMessage[]>("list_mail_messages", { accountId, category }),
+  syncMailMessages: (accountId: string, category: MailCategory, knownIds: string[]) => invoke<MailSyncResult>("sync_mail_messages", { accountId, category, knownIds }),
   getMailMessage: (accountId: string, messageId: string, category: MailCategory = "inbox") => invoke<MailMessage>("get_mail_message", { accountId, messageId, category }),
 };

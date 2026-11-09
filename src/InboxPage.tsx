@@ -22,6 +22,28 @@ function readOrder(): Provider[] {
   return defaults;
 }
 function reasonText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function mailCacheKey(environment: string, account: string, category: MailCategory) { return `northstar.mail-cache.v1:${environment}:${account}:${category}`; }
+function readMailCache(key: string): MailMessage[] | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) || "null");
+    if (!Array.isArray(value) || value.length > 20) return null;
+    return value.filter((item): item is MailMessage => item && typeof item.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(item.id) && typeof item.threadId === "string" && typeof item.from === "string" && typeof item.subject === "string" && typeof item.date === "string" && typeof item.snippet === "string" && Array.isArray(item.labels) && item.labels.every((label: unknown) => typeof label === "string"));
+  } catch { return null; }
+}
+function writeMailCache(key: string, messages: MailMessage[]) {
+  try { localStorage.setItem(key, JSON.stringify(messages.slice(0, 20).map(({body: _body, ...metadata}) => metadata))); } catch { /* continue without persistent cache */ }
+}
+async function syncMessages(accountId: string, category: MailCategory, cached: MailMessage[]): Promise<MailMessage[]> {
+  try {
+    const result = await desktopApi.syncMailMessages(accountId, category, cached.map(item => item.id));
+    const all = new Map([...cached, ...result.newMessages].map(item => [item.id, item]));
+    const unread = new Set(result.unread);
+    return result.order.flatMap(id => { const item = all.get(id); if (!item) return []; return [{ ...item, labels: [...item.labels.filter(label => label !== "UNREAD"), ...(unread.has(id) ? ["UNREAD"] : [])] }]; });
+  } catch (reason) {
+    if (/unknown command|not found|not recognized/i.test(reasonText(reason)) && /sync_mail_messages/i.test(reasonText(reason))) return desktopApi.listMailMessages(accountId, category);
+    throw reason;
+  }
+}
 
 export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: Page) => void; desktop: DesktopContext | null }) {
   const [order, setOrder] = useState<Provider[]>(readOrder);
@@ -37,6 +59,7 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
   const [busy, setBusy] = useState(false); const [cancelling, setCancelling] = useState(false);
   const [messages, setMessages] = useState<MailMessage[]>([]); const [message, setMessage] = useState<MailMessage | null>(null);
   const [loading, setLoading] = useState(false); const [error, setError] = useState("");
+  const [hasCache, setHasCache] = useState(false);
   const [notice, setNotice] = useState("");
   const generation = useRef(0); const dragged = useRef<Provider | null>(null);
   const connected = accounts.filter(item => item.provider === provider && item.connectionState === "connected");
@@ -55,11 +78,13 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
     setAccountId(current => available.some(item => item.id === current) ? current : available[0]?.id || "");
   }, [provider, accounts]);
   useEffect(() => {
-    if (!accountId || !desktop) { setMessages([]); setLoading(false); return; }
+    if (!accountId || !desktop) { setMessages([]); setHasCache(false); setLoading(false); return; }
     const request = ++generation.current;
-    setLoading(true); setError(""); setMessages([]); setMessage(null);
-    void desktopApi.listMailMessages(accountId, category).then(items => { if (request === generation.current) setMessages(items); })
-      .catch(reason => { if (request === generation.current) setError(reasonText(reason)); })
+    const key = mailCacheKey(desktop.environment, accountId, category);
+    const saved = readMailCache(key); const cached = saved ?? [];
+    setLoading(true); setError(""); setHasCache(saved !== null); setMessages(cached); setMessage(null);
+    void syncMessages(accountId, category, cached).then(items => { if (request === generation.current) { setMessages(items); setHasCache(true); writeMailCache(key, items); } })
+      .catch(reason => { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); })
       .finally(() => { if (request === generation.current) setLoading(false); });
     return () => { generation.current++; };
   }, [accountId, category, desktop]);
@@ -72,8 +97,10 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
   const refresh = async () => {
     if (!accountId) return;
     const request = ++generation.current; setLoading(true); setError(""); setMessage(null);
-    try { const items = await desktopApi.listMailMessages(accountId, category); if (request === generation.current) setMessages(items); }
-    catch (reason) { if (request === generation.current) setError(reasonText(reason)); }
+    const key = mailCacheKey(desktop?.environment || "production", accountId, category);
+    const saved = readMailCache(key); const cached = saved ?? [];
+    try { const items = await syncMessages(accountId, category, cached); if (request === generation.current) { setMessages(items); setHasCache(true); writeMailCache(key, items); } }
+    catch (reason) { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); }
     finally { if (request === generation.current) setLoading(false); }
   };
   const openMessage = async (item: MailMessage) => {
@@ -115,7 +142,7 @@ export default function InboxPage({ onNavigate, desktop }: { onNavigate: (page: 
         {method === "app_password" ? <div className="gmail-connect"><p>输入 Gmail 地址和应用专用密码，连接后自动同步邮件。</p><div className="mail-fields"><input type="email" value={address} onChange={event => setAddress(event.target.value)} placeholder="Gmail 地址" aria-label="Gmail 地址" /><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="应用专用密码" aria-label="应用专用密码" /><button className="primary" disabled={busy || !address.trim() || !password.trim()} onClick={() => void connect()}>{busy ? "正在连接…" : "连接 Gmail"}</button></div><p>首次使用需要开启 Google 两步验证并生成密码。 <button type="button" className="gmail-help-link" onClick={() => void desktopApi.openGmailAppPasswords().catch(reason => setError(reasonText(reason)))}>打开 Google 设置 ↗</button></p></div> : <div className="gmail-connect">{!setup?.configured ? <><p>填写 Google 桌面客户端 ID。</p><div className="mail-fields"><input className="gmail-client-id" value={clientId} onChange={event => setClientId(event.target.value)} placeholder="123…apps.googleusercontent.com" /><button className="primary" disabled={busy || !clientId.trim()} onClick={() => void saveId()}>保存 Client ID</button></div></> : <><p>已配置 Client ID（{setup.clientIdHint}），授权令牌保存在本机。</p><div className="gmail-secret"><input type="password" autoComplete="off" value={clientSecret} onChange={event => setClientSecret(event.target.value)} aria-label="Google 客户端密钥" placeholder={setup.clientSecretConfigured ? "替换客户端密钥（可选）" : "Google 客户端密钥"} /><button disabled={busy || !clientSecret.trim()} onClick={() => void saveSecret()}>保存密钥</button></div><div className="gmail-actions"><button className="primary" disabled={busy} onClick={() => void connect()}>{busy ? "等待浏览器授权…" : "连接 Gmail"}</button>{busy && <button disabled={cancelling} onClick={() => { setCancelling(true); void desktopApi.cancelGmailAuth().catch(reason => { setError(reasonText(reason)); setCancelling(false); }); }}>取消授权</button>}</div></>}</div>}
         <p className="setup-note">凭据保存在 Windows 凭据管理器；邮件以只读方式访问。</p></section>}
       {error && <p role="alert" className="inline-error">{error}</p>}
-      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p><pre>{message.body || message.snippet || "此邮件没有可显示的纯文本正文。"}</pre></article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>显示最近 20 封 · 只读</span></div>{loading ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
+      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p><pre>{message.body || message.snippet || "此邮件没有可显示的纯文本正文。"}</pre></article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>显示最近 20 封 · 只读</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
     </>}
     </div>
   </section>;

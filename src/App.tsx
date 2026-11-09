@@ -3,7 +3,6 @@ import InboxPage from "./InboxPage";
 import { desktopApi, getDesktopContext, type CustomService, type DesktopContext, type ObsidianNote, type ObsidianTask, type ServiceStatus, type SidebarCounts } from "./desktop";
 import { version as browserVersion } from "../package.json";
 import type { Update } from "@tauri-apps/plugin-updater";
-import northstarLogo from "../src-tauri/northstar-icon.svg";
 
 type Page = "home" | "tasks" | "trending" | "agents" | "notes" | "inbox" | "services";
 
@@ -38,13 +37,12 @@ function currentGreeting(hour: number, hasAlert: boolean) {
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
-  const [hasAlert, setHasAlert] = useState(false);
-  const [clock, setClock] = useState(() => new Date().getHours());
+  const [clock] = useState(() => new Date().getHours());
+  const [night, setNight] = useState(() => { try { const saved = localStorage.getItem("northstar.theme"); if (saved === "night" || saved === "day") return saved === "night"; } catch { /* use the local time */ } const hour = new Date().getHours(); return hour >= 22 || hour < 6; });
   const [desktop, setDesktop] = useState<DesktopContext | null>(null);
   const [sidebarCounts, setSidebarCounts] = useState<SidebarCounts | null>(null);
   const [version, setVersion] = useState(browserVersion);
   const [update, setUpdate] = useState<Update | null>(null);
-  const [uiRevision, setUiRevision] = useState(0);
   const [uiUpdate, setUiUpdate] = useState<{revision: number} | null>(null);
   const [updateState, setUpdateState] = useState("");
 
@@ -62,7 +60,7 @@ export default function App() {
       catch (error) { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); }
       finally { checkingUi = false; }
     };
-    void desktopApi.uiUpdateReady().then(revision => { if (!active) return; setUiRevision(revision); uiReady = true; void checkUi(); }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
+    void desktopApi.uiUpdateReady().then(() => { if (!active) return; uiReady = true; void checkUi(); }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
     const timer = window.setInterval(() => void checkUi(), 5 * 60 * 1000);
     const onFocus = () => void checkUi(); window.addEventListener("focus", onFocus);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
@@ -83,16 +81,16 @@ export default function App() {
   useEffect(() => { if (desktop) void desktopApi.getSidebarCounts().then(setSidebarCounts).catch(() => setSidebarCounts(null)); }, [desktop]);
   const badgeFor = (id: Page) => id === "tasks" ? sidebarCounts?.openTasks : id === "inbox" ? sidebarCounts?.unreadMail : id === "agents" ? desktop?.agents.filter(agent => agent.installed).length : undefined;
 
-  return <div className={`app-shell ${clock >= 22 || clock < 6 ? "night" : ""}`}>
-    <header className="titlebar">{!desktop && <div className="brand"><img className="brand-logo" src={northstarLogo} alt="" />北极星 <small>Northstar</small></div>}{desktop?.environment === "development" && <strong className="dev-label">开发版 · 测试数据</strong>}<div className="title-actions"><button onClick={() => setClock(clock >= 22 ? 9 : 23)} aria-label="切换预览时间">{clock >= 22 ? "日间预览" : "夜间预览"}</button><button onClick={() => setHasAlert(!hasAlert)} aria-label="切换服务告警">{hasAlert ? "告警预览开启" : "告警预览关闭"}</button></div></header>
+  return <div className={`app-shell ${night ? "night" : ""}`}>
+    {desktop?.environment === "development" && <div className="development-marker"><strong className="dev-label">开发版 · 测试数据</strong></div>}
     <div className="workspace">
       <aside className="sidebar"><nav aria-label="主导航">{nav.map(item => { const badge = badgeFor(item.id); const icons: Record<Page, string> = { home: "⌂", tasks: "✓", trending: "⌁", agents: "✦", notes: "▤", inbox: "✉", services: "◎" }; return <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><span className="dock-icon" aria-hidden="true">{icons[item.id]}</span><span className="dock-label">{item.label}</span>{badge !== undefined && badge > 0 && <small className="nav-badge">{badge > 99 ? "99+" : badge}</small>}</button>; })}</nav></aside>
-      <main>{page === "home" ? <Home clock={clock} previewAlert={hasAlert} onNavigate={setPage} desktop={desktop} unreadMail={sidebarCounts?.unreadMail} /> : page === "trending" ? <TrendingPage onNavigate={setPage} /> : page === "tasks" ? <TasksPage onNavigate={setPage} desktop={desktop} /> : page === "notes" ? <NotesPage onNavigate={setPage} desktop={desktop} /> : page === "inbox" ? <InboxPage onNavigate={setPage} desktop={desktop} /> : page === "services" ? <ServicesPage onNavigate={setPage} desktop={desktop} /> : <PageContent page={page} onNavigate={setPage} desktop={desktop} />}</main>
-    </div>{page === "home" && <div className="version-indicator"><span>V{version}{uiRevision > 0 ? ` · 界面 ${uiRevision}` : ""}</span>{(update || uiUpdate) && <button disabled={updateState.startsWith("正在")} onClick={() => void installUpdate()} aria-label={update ? `更新至版本 ${update.version}` : `应用界面更新 ${uiUpdate?.revision}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>}
+      <main>{page === "home" ? <Home clock={clock} onNavigate={setPage} desktop={desktop} unreadMail={sidebarCounts?.unreadMail} /> : page === "trending" ? <TrendingPage onNavigate={setPage} /> : page === "tasks" ? <TasksPage onNavigate={setPage} desktop={desktop} /> : page === "notes" ? <NotesPage onNavigate={setPage} desktop={desktop} /> : page === "inbox" ? <InboxPage onNavigate={setPage} desktop={desktop} /> : page === "services" ? <ServicesPage onNavigate={setPage} desktop={desktop} /> : <PageContent page={page} onNavigate={setPage} desktop={desktop} />}</main>
+    </div><div className="version-indicator"><button className="theme-toggle" onClick={() => setNight(current => { const next = !current; try { localStorage.setItem("northstar.theme", next ? "night" : "day"); } catch { /* retain this session's preference */ } return next; })} aria-label={night ? "切换日间模式" : "切换夜间模式"} title={night ? "切换日间模式" : "切换夜间模式"}>{night ? "☀" : "☾"}</button><span>V{version}</span>{(update || uiUpdate) && <button disabled={updateState.startsWith("正在")} onClick={() => void installUpdate()} aria-label={update ? `更新至版本 ${update.version}` : `应用界面更新 ${uiUpdate?.revision}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>
   </div>;
 }
 
-function Home({ clock, previewAlert, onNavigate, desktop, unreadMail }: { clock: number; previewAlert: boolean; onNavigate: (page: Page) => void; desktop: DesktopContext | null; unreadMail?: number }) {
+function Home({ clock, onNavigate, desktop, unreadMail }: { clock: number; onNavigate: (page: Page) => void; desktop: DesktopContext | null; unreadMail?: number }) {
   const [pending, setPending] = useState<number | null>(null);
   const [todayReminders, setTodayReminders] = useState(0);
   const [serviceAlert, setServiceAlert] = useState<string | null>(null);
@@ -114,9 +112,9 @@ function Home({ clock, previewAlert, onNavigate, desktop, unreadMail }: { clock:
     }).catch(() => undefined);
     return () => { active = false; };
   }, [desktop]);
-  const hasAlert = serviceAlert !== null || previewAlert;
+  const hasAlert = serviceAlert !== null;
   const greeting = currentGreeting(clock, hasAlert);
-  return <section className="home"><div className="home-intro"><p className="eyebrow">{greeting.eyebrow} · Northstar</p><h1>{greeting.title}</h1><p className="lead">{greeting.body}</p></div><div className="home-stack"><button className="space-card" onClick={() => onNavigate("trending")}><i>⌁</i><b>今日热点</b><span>看看开发者们正在关注什么</span><em>查看热点 →</em></button><button className="space-card" onClick={() => onNavigate("tasks")}><i>✓</i><b>我的待办</b><span>{pending === null ? (desktop ? "正在读取待办…" : "桌面版可读取待办") : pending ? `${pending} 项待办${todayReminders ? ` · ${todayReminders} 项今天提醒` : ""}` : "暂无待办"}</span><em>打开待办 →</em></button><button className="space-card" onClick={() => onNavigate("inbox")}><i>✉</i><b>收件箱</b><span>{!desktop ? "桌面版可查看邮件" : unreadMail === undefined ? "正在读取邮件状态…" : unreadMail > 0 ? `${unreadMail} 封未读邮件` : "查看你的邮件"}</span><em>打开收件箱 →</em></button><button className={`space-card${hasAlert ? " alert" : ""}`} onClick={() => onNavigate("services")}><i>⌁</i><b>我的服务</b><span>{serviceAlert || (previewAlert ? "服务告警预览已开启" : serviceCount === null ? (desktop ? "正在探测服务…" : "桌面版可查看服务") : serviceCount ? `${serviceCount} 项服务运行正常` : "尚未登记服务")}</span><em>查看服务 →</em></button></div></section>;
+  return <section className="home"><div className="home-intro"><p className="eyebrow">{greeting.eyebrow} · Northstar</p><h1>{greeting.title}</h1><p className="lead">{greeting.body}</p></div><div className="home-stack"><button className="space-card" onClick={() => onNavigate("trending")}><i>⌁</i><b>今日热点</b><span>看看开发者们正在关注什么</span><em>查看热点 →</em></button><button className="space-card" onClick={() => onNavigate("tasks")}><i>✓</i><b>我的待办</b><span>{pending === null ? (desktop ? "正在读取待办…" : "桌面版可读取待办") : pending ? `${pending} 项待办${todayReminders ? ` · ${todayReminders} 项今天提醒` : ""}` : "暂无待办"}</span><em>打开待办 →</em></button><button className="space-card" onClick={() => onNavigate("inbox")}><i>✉</i><b>收件箱</b><span>{!desktop ? "桌面版可查看邮件" : unreadMail === undefined ? "正在读取邮件状态…" : unreadMail > 0 ? `${unreadMail} 封未读邮件` : "查看你的邮件"}</span><em>打开收件箱 →</em></button><button className={`space-card${hasAlert ? " alert" : ""}`} onClick={() => onNavigate("services")}><i>⌁</i><b>我的服务</b><span>{serviceAlert || (serviceCount === null ? (desktop ? "正在探测服务…" : "桌面版可查看服务") : serviceCount ? `${serviceCount} 项服务运行正常` : "尚未登记服务")}</span><em>查看服务 →</em></button></div></section>;
 }
 
 function DesktopRequired({ desktop }: { desktop: DesktopContext | null }) {

@@ -29,7 +29,9 @@ npm run desktop:build
 
 开发版首次运行只创建空的测试目录，不复制生产数据。开发模式必须使用以上命令，应用会在标识与编译环境不匹配时拒绝启动，以避免误用正式数据。
 
-当前桌面版已可发现本机 Obsidian Vault 以及 DSH、Pi、Codex 的安装状态；待办会直接读写 Vault 中的 Markdown checkbox，笔记可创建、检索与跳转 Obsidian。GitHub 热点调用公开 API；“我的服务”读取 `~/.dsh/dsh-ssh.json` 中登记的主机，通过只读 SSH 采集 Hermes 与 Seoul 的基础健康度与关键服务状态。收件箱已支持 Gmail Desktop OAuth（PKCE）、Windows 凭据管理器令牌保存、收件箱列表与纯文本正文阅读；首次使用需在 Google Cloud 配置 Desktop app Client ID。Outlook、QQ 与通用 IMAP 目前保留账户登记入口，授权与同步仍在后续里程碑。
+当前桌面版已可发现本机 Obsidian Vault 以及 DSH、Pi、Codex 的安装状态；待办会直接读写 Vault 中的 Markdown checkbox，笔记可创建、检索与跳转 Obsidian。GitHub 热点调用公开 API；“我的服务”读取 `~/.dsh/dsh-ssh.json` 中登记的主机，通过只读 SSH 采集 Hermes 与 Seoul 的基础健康度与关键服务状态。收件箱已支持 Gmail 应用专用密码和 Desktop OAuth（PKCE），凭据保存在 Windows 凭据管理器，支持列表与纯文本正文阅读；OAuth 模式需要 Google Cloud Desktop app Client ID。Outlook、QQ 与通用 IMAP 暂未接入授权和同步。
+
+Gmail 也可使用应用专用密码通过 IMAP 连接。最近 20 封的列表元数据缓存在应用本机存储中，正文和邮箱凭据不写入列表缓存。再次进入时先显示缓存并后台核对；IMAP 仅对新出现的邮件获取邮件头，同时更新已读状态及移除已删除邮件。OAuth 当前仍以完整列表查询为主。缓存是本机数据，不会提交到项目仓库。
 
 ## 更新
 

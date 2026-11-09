@@ -147,3 +147,12 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 @media(max-width:720px) { .app-shell { padding-bottom:10px; }.inbox-fixed { padding:18px 20px 0; }.inbox-content { padding:0 20px 70px; }.inbox-fixed .inbox-header { margin-bottom:12px; }.sidebar nav button { width:39px; min-width:39px; } }
 @media(max-height:600px) { .inbox-fixed .inbox-header .back { margin-bottom:6px; }.inbox-fixed .inbox-header { margin-bottom:9px; }.inbox-fixed .inbox-header .eyebrow { margin-bottom:4px; }.inbox-fixed .mail-category-bar { padding:8px 0; }.inbox-fixed .mail-provider-tabs > button { padding:6px 10px; } }
 @media(hover:none) { .sidebar nav button .dock-icon,.sidebar nav button.active .dock-icon { width:25px; height:25px; bottom:2px; border-radius:9px; font-size:15px; color:#3577d3; background:#e5efff; }.sidebar nav button.active .dock-icon { color:white; background:linear-gradient(145deg,#4d96ff,#7065ed); }.night .sidebar nav button .dock-icon { color:#d9eaff; background:#415a78; }.night .sidebar nav button.active .dock-icon { color:white; background:linear-gradient(145deg,#4d96ff,#7065ed); } }
+
+/* Modules share the workspace background instead of adding a second frame. */
+.workspace > main > .module { max-width:1450px; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.workspace > main > .inbox-redesign { background:transparent; }
+.night .workspace > main > .module { background:transparent; box-shadow:none; }
+.version-indicator { z-index:101; }
+.version-indicator .theme-toggle { display:grid; width:28px; height:28px; place-items:center; padding:0; border-radius:50%; color:#5777a4; background:rgba(255,255,255,.55); font-size:17px; line-height:1; }
+.night .version-indicator .theme-toggle { color:#d3def0; background:rgba(61,76,98,.8); }
+.development-marker { position:fixed; z-index:101; top:12px; right:18px; }

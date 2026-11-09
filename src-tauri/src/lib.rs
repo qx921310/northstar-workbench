@@ -144,6 +144,14 @@ struct MailMessage {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct MailSyncResult {
+    order: Vec<String>,
+    unread: Vec<String>,
+    new_messages: Vec<MailMessage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SidebarCounts {
     open_tasks: usize,
     unread_mail: usize,
@@ -1408,6 +1416,23 @@ fn list_mail_messages_blocking(account_id: String, category: &str) -> Result<Vec
 }
 
 #[tauri::command]
+async fn sync_mail_messages(account_id: String, category: String, known_ids: Vec<String>) -> Result<MailSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let category = valid_mail_category(&category)?;
+        if known_ids.len() > 20 || known_ids.iter().any(|id| id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
+            return Err("邮件缓存标识无效".into());
+        }
+        let accounts = read_mail_accounts()?;
+        let account = accounts.iter().find(|a| a.id == account_id && a.provider == "gmail" && a.connection_state == "connected").ok_or("邮箱账户不存在或尚未连接")?;
+        if account.auth_type == "app_password" { return imap_mail::sync(account, category, &known_ids); }
+        let messages = list_mail_messages_blocking(account_id, category)?;
+        let order = messages.iter().map(|item| item.id.clone()).collect();
+        let unread = messages.iter().filter(|item| item.labels.iter().any(|label| label == "UNREAD")).map(|item| item.id.clone()).collect();
+        Ok(MailSyncResult { order, unread, new_messages: messages })
+    }).await.map_err(|_| "同步邮件任务失败".to_string())?
+}
+
+#[tauri::command]
 async fn get_mail_message(account_id: String, message_id: String, category: Option<String>) -> Result<MailMessage, String> {
     tauri::async_runtime::spawn_blocking(move || get_mail_message_blocking(account_id, message_id, category.as_deref().unwrap_or("inbox"))).await.map_err(|_| "读取邮件任务失败".to_string())?
 }
@@ -1547,6 +1572,7 @@ pub fn run() {
             cancel_gmail_auth,
             open_gmail_app_passwords,
             list_mail_messages,
+            sync_mail_messages,
             get_mail_message,
             register_custom_service,
             remove_custom_service
