@@ -1369,11 +1369,16 @@ fn open_gmail_app_passwords() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_mail_messages_blocking(account_id)).await.map_err(|_| "读取邮件任务失败".to_string())?
+async fn list_mail_messages(account_id: String, category: Option<String>) -> Result<Vec<MailMessage>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_mail_messages_blocking(account_id, category.as_deref().unwrap_or("inbox"))).await.map_err(|_| "读取邮件任务失败".to_string())?
 }
 
-fn list_mail_messages_blocking(account_id: String) -> Result<Vec<MailMessage>, String> {
+fn valid_mail_category(category: &str) -> Result<&str, String> {
+    match category { "inbox" | "all" | "unread" | "read" | "spam" => Ok(category), _ => Err("邮件分类无效".into()) }
+}
+
+fn list_mail_messages_blocking(account_id: String, category: &str) -> Result<Vec<MailMessage>, String> {
+    let category = valid_mail_category(category)?;
     let accounts = read_mail_accounts()?;
     let account = accounts
         .iter()
@@ -1382,8 +1387,9 @@ fn list_mail_messages_blocking(account_id: String) -> Result<Vec<MailMessage>, S
     if account.provider != "gmail" || account.connection_state != "connected" {
         return Err("该邮箱尚未完成 Gmail 连接".to_string());
     }
-    if account.auth_type == "app_password" { return imap_mail::list(account); }
-    let listing = gmail_api_get(&account.id, "messages?labelIds=INBOX&maxResults=20")?;
+    if account.auth_type == "app_password" { return imap_mail::list(account, category); }
+    let path = match category { "inbox" => "messages?labelIds=INBOX&maxResults=20", "unread" => "messages?labelIds=UNREAD&maxResults=20", "read" => "messages?q=is%3Aread&maxResults=20", "spam" => "messages?labelIds=SPAM&includeSpamTrash=true&maxResults=20", _ => "messages?maxResults=20" };
+    let listing = gmail_api_get(&account.id, path)?;
     let mut messages = Vec::new();
     for id in listing["messages"]
         .as_array()
@@ -1401,11 +1407,12 @@ fn list_mail_messages_blocking(account_id: String) -> Result<Vec<MailMessage>, S
 }
 
 #[tauri::command]
-async fn get_mail_message(account_id: String, message_id: String) -> Result<MailMessage, String> {
-    tauri::async_runtime::spawn_blocking(move || get_mail_message_blocking(account_id, message_id)).await.map_err(|_| "读取邮件任务失败".to_string())?
+async fn get_mail_message(account_id: String, message_id: String, category: Option<String>) -> Result<MailMessage, String> {
+    tauri::async_runtime::spawn_blocking(move || get_mail_message_blocking(account_id, message_id, category.as_deref().unwrap_or("inbox"))).await.map_err(|_| "读取邮件任务失败".to_string())?
 }
 
-fn get_mail_message_blocking(account_id: String, message_id: String) -> Result<MailMessage, String> {
+fn get_mail_message_blocking(account_id: String, message_id: String, category: &str) -> Result<MailMessage, String> {
+    let category = valid_mail_category(category)?;
     if message_id.trim().is_empty()
         || !message_id
             .chars()
@@ -1421,7 +1428,7 @@ fn get_mail_message_blocking(account_id: String, message_id: String) -> Result<M
     if account.provider != "gmail" || account.connection_state != "connected" {
         return Err("该邮箱尚未完成 Gmail 连接".to_string());
     }
-    if account.auth_type == "app_password" { return imap_mail::message(account, &message_id); }
+    if account.auth_type == "app_password" { return imap_mail::message(account, &message_id, category); }
     let message = gmail_api_get(&account.id, &format!("messages/{message_id}?format=full"))?;
     Ok(mail_message_from_gmail(&message, true))
 }
@@ -1542,6 +1549,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mail_categories_are_explicitly_limited() {
+        for category in ["inbox", "all", "unread", "read", "spam"] {
+            assert_eq!(valid_mail_category(category).unwrap(), category);
+        }
+        assert!(valid_mail_category("ALL\r\nLOGOUT").is_err());
+        assert!(valid_mail_category("trash").is_err());
+    }
 
     #[cfg(windows)]
     #[test]

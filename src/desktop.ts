@@ -15,6 +15,7 @@ export type ServiceStatus = {
 export type MailAccount = { id: string; provider: "gmail" | "outlook" | "qq" | "imap"; address: string; label: string; authType: "oauth" | "app_password"; connectionState: "setup_required" | "connected" | "error" };
 export type GmailSetup = { configured: boolean; clientIdHint?: string; clientSecretConfigured: boolean };
 export type MailMessage = { id: string; threadId: string; from: string; subject: string; date: string; snippet: string; labels: string[]; body?: string };
+export type MailCategory = "inbox" | "all" | "unread" | "read" | "spam";
 export type SidebarCounts = { openTasks: number; unreadMail: number };
 export type CustomService = { id: string; name: string; target: string; kind: "http" | "tcp" };
 
@@ -65,6 +66,6 @@ export const desktopApi = {
   connectGmailImap: (address: string, password: string) => invoke<MailAccount>("connect_gmail_imap", { address, password }),
   openGmailAppPasswords: () => invoke<void>("open_gmail_app_passwords"),
   cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
-  listMailMessages: (accountId: string) => invoke<MailMessage[]>("list_mail_messages", { accountId }),
-  getMailMessage: (accountId: string, messageId: string) => invoke<MailMessage>("get_mail_message", { accountId, messageId }),
+  listMailMessages: (accountId: string, category: MailCategory = "inbox") => invoke<MailMessage[]>("list_mail_messages", { accountId, category }),
+  getMailMessage: (accountId: string, messageId: string, category: MailCategory = "inbox") => invoke<MailMessage>("get_mail_message", { accountId, messageId, category }),
 };
