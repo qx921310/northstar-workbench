@@ -51,7 +51,22 @@ export default function App() {
     if (!desktop || desktop.environment === "development") return;
     let active = true;
     void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(value => { if (active) setVersion(value); }).catch(() => undefined);
-    void import("@tauri-apps/plugin-updater").then(({ check }) => check()).then(value => { if (active) setUpdate(value); else void value?.close(); }).catch(() => { if (active) setUpdateState("更新检查暂不可用"); });
+    let nativeUpdate: Update | null = null, checkingNative = false, lastNativeCheck = 0;
+    const closeUpdate = (item: Update | null) => { if (item) void item.close().catch(() => undefined); };
+    const checkNative = async () => {
+      if (!active || checkingNative || Date.now() - lastNativeCheck < 30000) return;
+      checkingNative = true; lastNativeCheck = Date.now();
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const next = await check({ timeout: 15000 });
+        if (!active) { closeUpdate(next); return; }
+        if (next && nativeUpdate && next.version === nativeUpdate.version) { closeUpdate(next); }
+        else { closeUpdate(nativeUpdate); nativeUpdate = next; setUpdate(next); }
+        setUpdateState(value => value === "更新检查暂不可用" ? "" : value);
+      } catch { if (active && !nativeUpdate) setUpdateState(value => value && value !== "更新检查暂不可用" ? value : "更新检查暂不可用"); }
+      finally { checkingNative = false; }
+    };
+    void checkNative();
     let uiReady = false, checkingUi = false, lastUiCheck = 0;
     const checkUi = async () => {
       if (!active || !uiReady || checkingUi || Date.now() - lastUiCheck < 30000) return;
@@ -61,9 +76,10 @@ export default function App() {
       finally { checkingUi = false; }
     };
     void desktopApi.uiUpdateReady().then(() => { if (!active) return; uiReady = true; void checkUi(); }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
-    const timer = window.setInterval(() => void checkUi(), 5 * 60 * 1000);
-    const onFocus = () => void checkUi(); window.addEventListener("focus", onFocus);
-    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
+    const checkUpdates = () => { void checkNative(); void checkUi(); };
+    const timer = window.setInterval(checkUpdates, 5 * 60 * 1000);
+    window.addEventListener("focus", checkUpdates);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", checkUpdates); closeUpdate(nativeUpdate); };
   }, [desktop]);
   const installUpdate = async () => {
     if ((!update && !uiUpdate) || updateState.startsWith("正在")) return;
