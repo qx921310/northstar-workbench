@@ -63,6 +63,7 @@ export const desktopApi = {
   setGmailClientSecret: (clientSecret: string) => invoke<GmailSetup>("set_gmail_client_secret", { clientSecret }),
   connectGmail: () => invoke<MailAccount>("connect_gmail"),
   connectGmailImap: (address: string, password: string) => invoke<MailAccount>("connect_gmail_imap", { address, password }),
+  openGmailAppPasswords: () => invoke<void>("open_gmail_app_passwords"),
   cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
   listMailMessages: (accountId: string) => invoke<MailMessage[]>("list_mail_messages", { accountId }),
   getMailMessage: (accountId: string, messageId: string) => invoke<MailMessage>("get_mail_message", { accountId, messageId }),

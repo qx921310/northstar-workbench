@@ -1355,6 +1355,20 @@ fn cancel_gmail_auth() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_gmail_app_passwords() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        hidden_command("rundll32")
+            .args(["url.dll,FileProtocolHandler", "https://myaccount.google.com/apppasswords"])
+            .spawn()
+            .map_err(|_| "无法打开默认浏览器，请手动访问 myaccount.google.com/apppasswords".to_string())?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    { Err("请在浏览器中访问 myaccount.google.com/apppasswords".into()) }
+}
+
+#[tauri::command]
 async fn list_mail_messages(account_id: String) -> Result<Vec<MailMessage>, String> {
     tauri::async_runtime::spawn_blocking(move || list_mail_messages_blocking(account_id)).await.map_err(|_| "读取邮件任务失败".to_string())?
 }
@@ -1515,6 +1529,7 @@ pub fn run() {
             connect_gmail,
             imap_mail::connect_gmail_imap,
             cancel_gmail_auth,
+            open_gmail_app_passwords,
             list_mail_messages,
             get_mail_message,
             register_custom_service,
