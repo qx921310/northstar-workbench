@@ -27,7 +27,7 @@ fn login(address: &str, password: &str) -> Result<Session, String> {
     client.login(address, password).map_err(|_| "Gmail 登录失败：请检查邮箱地址、应用专用密码及账号的两步验证设置".to_string())
 }
 
-fn open(account: &MailAccount, category: &str) -> Result<(Session, u32), String> {
+fn open(account: &MailAccount, category: &str, writable: bool) -> Result<(Session, u32), String> {
     let password = entry(&account.id)?.get_password().map_err(|_| "未找到应用专用密码，请重新连接邮箱".to_string())?;
     let mut session = login(&account.address, &password)?;
     let folder = if category == "inbox" { "INBOX".to_string() } else {
@@ -36,7 +36,7 @@ fn open(account: &MailAccount, category: &str) -> Result<(Session, u32), String>
         folders.iter().find(|folder| folder.attributes().iter().any(|attr| matches!(attr, imap::types::NameAttribute::Custom(value) if value.eq_ignore_ascii_case(flag))))
             .map(|folder| folder.name().to_string()).ok_or_else(|| "未找到 Gmail 对应文件夹，请检查邮箱的 IMAP 设置".to_string())?
     };
-    let mailbox = session.examine(&folder).map_err(|_| "无法读取 Gmail 文件夹".to_string())?;
+    let mailbox = if writable { session.select(&folder) } else { session.examine(&folder) }.map_err(|_| "无法读取 Gmail 文件夹".to_string())?;
     let validity = mailbox.uid_validity.ok_or_else(|| "邮箱不支持稳定的邮件标识".to_string())?;
     Ok((session, validity))
 }
@@ -79,7 +79,7 @@ fn parse_message(id: String, bytes: &[u8], full: bool) -> Result<MailMessage, St
 }
 
 pub(super) fn list(account: &MailAccount, category: &str) -> Result<Vec<MailMessage>, String> {
-    let (mut session, validity) = open(account, category)?;
+    let (mut session, validity) = open(account, category, false)?;
     let query = match category { "unread" => "UNSEEN", "read" => "SEEN", _ => "ALL" };
     let mut uids: Vec<u32> = session.uid_search(query).map_err(|_| "无法查询 Gmail 邮件".to_string())?.into_iter().collect();
     uids.sort_unstable_by(|a, b| b.cmp(a));
@@ -99,7 +99,7 @@ pub(super) fn list(account: &MailAccount, category: &str) -> Result<Vec<MailMess
 }
 
 pub(super) fn sync(account: &MailAccount, category: &str, known_ids: &[String]) -> Result<MailSyncResult, String> {
-    let (mut session, validity) = open(account, category)?;
+    let (mut session, validity) = open(account, category, false)?;
     let result = sync_folder(&mut session, validity, category, known_ids)?;
     let _ = session.logout();
     Ok(result)
@@ -143,7 +143,7 @@ pub(super) fn message(account: &MailAccount, id: &str, category: &str) -> Result
     let validity: u32 = validity.parse().map_err(|_| "邮件标识无效".to_string())?;
     let uid: u32 = uid.parse().map_err(|_| "邮件标识无效".to_string())?;
     if uid == 0 { return Err("邮件标识无效".into()); }
-    let (mut session, actual_validity) = open(account, category)?;
+    let (mut session, actual_validity) = open(account, category, false)?;
     if validity != actual_validity { return Err("收件箱已发生变化，请刷新列表".into()); }
     let result = {
         let fetched = session.uid_fetch(uid.to_string(), "(UID RFC822.SIZE BODY.PEEK[]<0.5242880>)").map_err(|_| "无法读取邮件正文".to_string())?;
@@ -153,6 +153,22 @@ pub(super) fn message(account: &MailAccount, id: &str, category: &str) -> Result
     };
     let _ = session.logout();
     Ok(result)
+}
+
+fn store_seen<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>, uid: u32) -> Result<(), String> {
+    session.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Seen)").map_err(|_| "无法将邮件标记为已读".to_string())?;
+    Ok(())
+}
+pub(super) fn mark_read(account: &MailAccount, id: &str, category: &str) -> Result<(), String> {
+    let (validity, uid) = id.split_once('-').ok_or("邮件标识无效")?;
+    let validity: u32 = validity.parse().map_err(|_| "邮件标识无效")?;
+    let uid: u32 = uid.parse().map_err(|_| "邮件标识无效")?;
+    if uid == 0 { return Err("邮件标识无效".into()); }
+    let (mut session, actual) = open(account, category, true)?;
+    if validity != actual { return Err("收件箱已发生变化，请刷新列表".into()); }
+    let result = store_seen(&mut session, uid);
+    let _ = session.logout();
+    result
 }
 
 #[cfg(test)]
@@ -204,6 +220,16 @@ mod tests {
         assert!(!String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("BODY.PEEK"));
     }
 
+    #[test]
+    fn mark_read_sends_uid_store_seen() {
+        let responses = b"* OK hello\r\na1 OK logged in\r\na2 OK STORE completed\r\n";
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(RecordingStream { input: Cursor::new(responses.to_vec()), output: output.clone() });
+        client.read_greeting().unwrap();
+        let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        store_seen(&mut session, 42).unwrap();
+        assert!(String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("UID STORE 42 +FLAGS.SILENT (\\Seen)"));
+    }
     #[test]
     fn recognizes_gmail_special_use_folders() {
         let response = b"* OK hello\r\na1 OK logged in\r\n* LIST (\\HasNoChildren \\All) \"/\" \"[Gmail]/All Mail\"\r\n* LIST (\\HasNoChildren \\Junk) \"/\" \"[Gmail]/Spam\"\r\na2 OK LIST completed\r\n";

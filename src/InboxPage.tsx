@@ -8,6 +8,7 @@ const categories: { id: MailCategory; label: string }[] = [
   { id: "all", label: "全部邮件" }, { id: "inbox", label: "收件箱" },
   { id: "unread", label: "未读" }, { id: "read", label: "已读" }, { id: "spam", label: "垃圾邮件" },
 ];
+const sessionSynced = new Set<string>();
 const orderKey = "northstar.mail-provider-order.v1";
 
 function readOrder(): Provider[] {
@@ -67,7 +68,6 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
   const [hasCache, setHasCache] = useState(false);
   const [notice, setNotice] = useState("");
   const [compact, setCompact] = useState(false);
-  const synced = useRef(new Set<string>());
   const generation = useRef(0); const dragged = useRef<Provider | null>(null);
   const connected = accounts.filter(item => item.provider === provider && item.connectionState === "connected");
 
@@ -91,9 +91,9 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
     const key = mailCacheKey(desktop.environment, accountId, source);
     const saved = readMailCache(key); const cached = saved ?? [];
     setError(""); setHasCache(saved !== null); setMessages(filterMail(cached, category)); setMessage(null);
-    if (synced.current.has(key) && saved !== null) { setLoading(false); return; }
+    if (sessionSynced.has(key) && saved !== null) { setLoading(false); return; }
     setLoading(true);
-    void syncMessages(accountId, source, cached).then(items => { if (request === generation.current) { synced.current.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } })
+    void syncMessages(accountId, source, cached).then(items => { if (request === generation.current) { sessionSynced.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } })
       .catch(reason => { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); })
       .finally(() => { if (request === generation.current) setLoading(false); });
     return () => { generation.current++; };
@@ -110,14 +110,30 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
     const source = sourceCategory(category);
     const key = mailCacheKey(desktop?.environment || "production", accountId, source);
     const saved = readMailCache(key); const cached = saved ?? [];
-    try { const items = await syncMessages(accountId, source, cached); if (request === generation.current) { synced.current.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } }
+    try { const items = await syncMessages(accountId, source, cached); if (request === generation.current) { sessionSynced.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } }
     catch (reason) { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); }
     finally { if (request === generation.current) setLoading(false); }
   };
   const openMessage = async (item: MailMessage) => {
     const request = ++generation.current; setLoading(true); setError("");
-    try { const result = await desktopApi.getMailMessage(accountId, item.id, category); if (request === generation.current) setMessage(result); }
-    catch (reason) { if (request === generation.current) setError(reasonText(reason)); }
+    try {
+      const result = await desktopApi.getMailMessage(accountId, item.id, category);
+      if (request !== generation.current) return;
+      setMessage(result);
+      if (item.labels.includes("UNREAD")) {
+        try {
+          await desktopApi.markMailRead(accountId, item.id, category);
+          const env = desktop?.environment || "production";
+          const source = sourceCategory(category);
+          const key = mailCacheKey(env, accountId, source);
+          const current = readMailCache(key);
+          if (current) writeMailCache(key, current.map(mail => mail.id === item.id ? { ...mail, labels: mail.labels.filter(label => label !== "UNREAD") } : mail));
+          // IMAP UIDs differ across folders; refresh those snapshots on next visit.
+          for (const folder of ["all", "inbox", "spam"] as const) if (folder !== source) { const other = mailCacheKey(env, accountId, folder); sessionSynced.delete(other); try { localStorage.removeItem(other); } catch { /* no persistent cache */ } }
+          if (request === generation.current) setMessages(current => filterMail(current.map(mail => mail.id === item.id ? { ...mail, labels: mail.labels.filter(label => label !== "UNREAD") } : mail), category));
+        } catch (reason) { if (request === generation.current) setError(`正文已打开，但未能同步已读状态：${reasonText(reason)}`); }
+      }
+    } catch (reason) { if (request === generation.current) setError(reasonText(reason)); }
     finally { if (request === generation.current) setLoading(false); }
   };
   const connect = async () => {
@@ -151,9 +167,9 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
       {connected.length > 0 && <div className="mail-toolbar"><div className="mail-account-picker"><span className="status"></span>{connected.length === 1 ? <b>{connected[0].address}</b> : <select aria-label="选择 Gmail 账户" value={accountId} onChange={event => setAccountId(event.target.value)}>{connected.map(item => <option key={item.id} value={item.id}>{item.address}</option>)}</select>}</div><div><button onClick={() => setShowSetup(value => !value)}>{showSetup ? "完成" : "＋ 添加账号"}</button><button disabled={loading || !accountId} onClick={() => void refresh()}>{loading ? "同步中…" : "刷新"}</button></div></div>}
       {(showSetup || connected.length === 0) && <section className="mail-setup"><h2>{connected.length ? "添加 Gmail" : "连接 Gmail"}</h2><div className="gmail-methods"><button className={method === "app_password" ? "selected" : ""} onClick={() => setMethod("app_password")}>应用专用密码</button><button className={method === "oauth" ? "selected" : ""} onClick={() => setMethod("oauth")}>Google 授权（高级）</button></div>
         {method === "app_password" ? <div className="gmail-connect"><p>输入 Gmail 地址和应用专用密码，连接后自动同步邮件。</p><div className="mail-fields"><input type="email" value={address} onChange={event => setAddress(event.target.value)} placeholder="Gmail 地址" aria-label="Gmail 地址" /><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="应用专用密码" aria-label="应用专用密码" /><button className="primary" disabled={busy || !address.trim() || !password.trim()} onClick={() => void connect()}>{busy ? "正在连接…" : "连接 Gmail"}</button></div><p>首次使用需要开启 Google 两步验证并生成密码。 <button type="button" className="gmail-help-link" onClick={() => void desktopApi.openGmailAppPasswords().catch(reason => setError(reasonText(reason)))}>打开 Google 设置 ↗</button></p></div> : <div className="gmail-connect">{!setup?.configured ? <><p>填写 Google 桌面客户端 ID。</p><div className="mail-fields"><input className="gmail-client-id" value={clientId} onChange={event => setClientId(event.target.value)} placeholder="123…apps.googleusercontent.com" /><button className="primary" disabled={busy || !clientId.trim()} onClick={() => void saveId()}>保存 Client ID</button></div></> : <><p>已配置 Client ID（{setup.clientIdHint}），授权令牌保存在本机。</p><div className="gmail-secret"><input type="password" autoComplete="off" value={clientSecret} onChange={event => setClientSecret(event.target.value)} aria-label="Google 客户端密钥" placeholder={setup.clientSecretConfigured ? "替换客户端密钥（可选）" : "Google 客户端密钥"} /><button disabled={busy || !clientSecret.trim()} onClick={() => void saveSecret()}>保存密钥</button></div><div className="gmail-actions"><button className="primary" disabled={busy} onClick={() => void connect()}>{busy ? "等待浏览器授权…" : "连接 Gmail"}</button>{busy && <button disabled={cancelling} onClick={() => { setCancelling(true); void desktopApi.cancelGmailAuth().catch(reason => { setError(reasonText(reason)); setCancelling(false); }); }}>取消授权</button>}</div></>}</div>}
-        <p className="setup-note">凭据保存在 Windows 凭据管理器；邮件以只读方式访问。</p></section>}
+        <p className="setup-note">凭据保存在 Windows 凭据管理器；阅读邮件会同步已读状态。</p></section>}
       {error && <p role="alert" className="inline-error">{error}</p>}
-      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p>{message.htmlBody ? <div className="message-html" dangerouslySetInnerHTML={{ __html: message.htmlBody }} /> : <pre>{message.body || message.snippet || "此邮件没有可显示的正文。"}</pre>}</article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>{category === "read" || category === "unread" ? "筛选最近 20 封全部邮件 · 只读" : "显示最近 20 封 · 只读"}</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
+      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><button className="back" onClick={() => setMessage(null)}>‹ 返回列表</button><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {message.date}</p>{message.htmlBody ? <div className="message-html" dangerouslySetInnerHTML={{ __html: message.htmlBody }} /> : <pre>{message.body || message.snippet || "此邮件没有可显示的正文。"}</pre>}</article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>{category === "read" || category === "unread" ? "筛选最近 20 封全部邮件" : "显示最近 20 封"}</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <div className="message-list">{messages.map(item => <button key={item.id} onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small>{item.date}</small></button>)}</div>}</>}</section>}
     </>}
     </div>
   </section>;

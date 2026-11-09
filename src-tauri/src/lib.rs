@@ -1278,7 +1278,7 @@ fn connect_gmail_blocking(cancelled: Arc<AtomicBool>) -> Result<MailAccount, Str
     query.append_pair("response_type", "code");
     query.append_pair(
         "scope",
-        "openid email https://www.googleapis.com/auth/gmail.readonly",
+        "openid email https://www.googleapis.com/auth/gmail.modify",
     );
     query.append_pair("access_type", "offline");
     query.append_pair("prompt", "consent");
@@ -1481,6 +1481,24 @@ fn get_mail_message_blocking(account_id: String, message_id: String, category: &
 }
 
 #[tauri::command]
+async fn mark_mail_read(account_id: String, message_id: String, category: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let category = valid_mail_category(&category)?;
+        if message_id.is_empty() || !message_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) { return Err("邮件标识无效".into()); }
+        let account = read_mail_accounts()?.into_iter().find(|a| a.id == account_id && a.provider == "gmail" && a.connection_state == "connected").ok_or("邮箱账户不存在或尚未连接")?;
+        if account.auth_type == "app_password" { return imap_mail::mark_read(&account, &message_id, category); }
+        let client_id = read_mail_settings()?.gmail_client_id.ok_or("请先配置 Google OAuth Client ID")?;
+        let token = refresh_gmail_token(&account.id, &client_id)?;
+        let response = reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).build().map_err(|_| "无法初始化 Gmail 连接")?
+            .post(format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/modify"))
+            .bearer_auth(token.access_token).json(&serde_json::json!({"removeLabelIds":["UNREAD"]})).send().map_err(|_| "无法同步已读状态")?;
+        if response.status() == reqwest::StatusCode::FORBIDDEN { return Err("当前 Google 授权没有修改已读状态的权限，请重新连接 Gmail 并授权".into()); }
+        response.error_for_status().map_err(|_| "无法同步已读状态".to_string())?;
+        Ok(())
+    }).await.map_err(|_| "同步已读状态任务失败".to_string())?
+}
+
+#[tauri::command]
 fn register_custom_service(
     name: String,
     target: String,
@@ -1597,6 +1615,7 @@ pub fn run() {
             list_mail_messages,
             sync_mail_messages,
             get_mail_message,
+            mark_mail_read,
             register_custom_service,
             remove_custom_service
         ])

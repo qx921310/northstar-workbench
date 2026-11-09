@@ -73,5 +73,6 @@ export const desktopApi = {
   cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
   listMailMessages: (accountId: string, category: MailCategory = "inbox") => invoke<MailMessage[]>("list_mail_messages", { accountId, category }),
   syncMailMessages: (accountId: string, category: MailCategory, knownIds: string[]) => invoke<MailSyncResult>("sync_mail_messages", { accountId, category, knownIds }),
+  markMailRead: (accountId: string, messageId: string, category: MailCategory) => invoke<void>("mark_mail_read", { accountId, messageId, category }),
   getMailMessage: (accountId: string, messageId: string, category: MailCategory = "inbox") => invoke<MailMessage>("get_mail_message", { accountId, messageId, category }),
 };

@@ -185,3 +185,18 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .inbox-fixed.compact .mail-category-bar { padding:5px 0; }
 .inbox-fixed.compact .mail-category-bar button { padding:5px 12px; }
 @media (prefers-reduced-motion:reduce) { .inbox-fixed,.inbox-fixed .inbox-header { transition:none; } }
+
+/* Compact module headers share the same visual treatment as the inbox. */
+.module-sticky { position:sticky; top:0; height:0; z-index:8; pointer-events:none; }
+.module-sticky span { position:absolute; top:-20px; left:0; right:0; display:flex; align-items:center; height:40px; padding:0 16px; border:1px solid rgba(255,255,255,.65); border-radius:13px; color:#335274; background:rgba(239,245,253,.94); box-shadow:0 6px 18px rgba(50,75,110,.09); opacity:0; transform:translateY(-8px); transition:opacity .18s ease,transform .18s ease; }
+.module-scrolled .module-sticky span { opacity:1; transform:translateY(0); }
+.night .module-sticky span { background:rgba(43,55,71,.96); border-color:#52647a; color:#e0ebf9; }
+.note-markdown { font-size:14px; line-height:1.75; overflow-wrap:anywhere; }
+.note-markdown h1,.note-markdown h2,.note-markdown h3 { margin:1.2em 0 .5em; font-size:1.4em; letter-spacing:normal; }
+.note-markdown h2 { font-size:1.25em; }.note-markdown h3 { font-size:1.1em; }
+.note-markdown p { margin:.65em 0; }.note-markdown blockquote { border-left:3px solid #9dbdec; padding-left:1em; margin:1em 0; color:#687994; }
+.note-markdown pre { overflow:auto; padding:14px; border-radius:12px; background:rgba(112,140,175,.12); white-space:pre; }.note-markdown code { font-family:Consolas,monospace; }
+.note-markdown table { border-collapse:collapse; max-width:100%; display:block; overflow:auto; }.note-markdown th,.note-markdown td { border:1px solid rgba(128,140,160,.35); padding:6px 10px; }
+.night .note-markdown blockquote { color:#c2d0e3; }
+@media(prefers-reduced-motion:reduce) { .module-sticky span { transition:none; } }
+.module-sticky { top:calc(24px - clamp(26px,4vw,52px)); }
