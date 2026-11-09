@@ -112,6 +112,16 @@ fn latest_revision(metadata: &serde_json::Value, current: u64) -> Option<u64> {
         .filter(|revision| *revision > current && names.contains(&format!("ui-{revision}.zip.sig").as_str())).max()
 }
 
+fn download_asset(client: &reqwest::blocking::Client, base: &str, metadata: &serde_json::Value, name: &str) -> Result<reqwest::blocking::Response, String> {
+    if let Ok(response) = client.get(format!("{base}/{name}")).send() {
+        if response.status().is_success() { return Ok(response); }
+    }
+    let id = metadata["assets"].as_array().into_iter().flatten().find(|asset| asset["name"].as_str() == Some(name)).and_then(|asset| asset["id"].as_u64()).ok_or("界面更新文件不存在")?;
+    client.get(format!("https://api.github.com/repos/qx921310/northstar-workbench/releases/assets/{id}"))
+        .header(reqwest::header::ACCEPT, "application/octet-stream").send().map_err(|_| "无法下载界面更新")?
+        .error_for_status().map_err(|_| "无法下载界面更新".into())
+}
+
 fn fetch(state: &UiState) -> Result<Option<UiUpdate>, String> {
     if is_development() { return Ok(None); }
     let client = reqwest::blocking::Client::builder().user_agent("Northstar-Workbench").timeout(Duration::from_secs(25)).redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -129,10 +139,9 @@ fn fetch(state: &UiState) -> Result<Option<UiUpdate>, String> {
     let Some(revision) = latest_revision(&metadata, current) else { return Ok(None); };
     if staged == Some(revision) { return Ok(Some(UiUpdate { revision })); }
     let base = format!("https://github.com/qx921310/northstar-workbench/releases/download/ui-v{SHELL_VERSION}");
-    let response = client.get(format!("{base}/ui-{revision}.zip")).send().map_err(|_| "无法检查界面更新")?;
-    if !response.status().is_success() { return Err("无法下载界面更新".into()); }
+    let response = download_asset(&client, &base, &metadata, &format!("ui-{revision}.zip"))?;
     let mut bytes = Vec::new(); response.take((MAX_ARCHIVE + 1) as u64).read_to_end(&mut bytes).map_err(|_| "无法读取界面更新")?;
-    let response = client.get(format!("{base}/ui-{revision}.zip.sig")).send().map_err(|_| "无法读取界面更新签名")?.error_for_status().map_err(|_| "无法读取界面更新签名")?;
+    let response = download_asset(&client, &base, &metadata, &format!("ui-{revision}.zip.sig"))?;
     let mut sig = String::new(); response.take(4097).read_to_string(&mut sig).map_err(|_| "界面更新签名格式无效")?;
     let bundle = verify(&bytes, &sig)?;
     if bundle.revision != revision { return Err("界面更新版本不匹配".into()); }
