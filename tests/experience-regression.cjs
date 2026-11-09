@@ -1,0 +1,24 @@
+const {chromium}=require('playwright'); const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.NORTHSTAR_BROWSER || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
+ const context=await browser.newContext({viewport:{width:1350,height:900},timezoneId:'Asia/Singapore'}); const page=await context.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+ await page.clock.install({time:new Date('2026-11-09T17:59:00+08:00')});
+ let images=0; await page.route('https://img.example.invalid/**',route=>{images++;return route.fulfill({status:200,contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXkAAAAASUVORK5CYII=','base64')});});
+ await page.addInitScript(()=>{window.__calls=[]; window.__TAURI_INTERNALS__={invoke:async(cmd,args={})=>{window.__calls.push([cmd,args]);
+ if(cmd==='get_desktop_context')return {environment:'development',vaultPath:'test',taskDirectory:'test',agents:[{name:'DSH',installed:true}]};
+ if(cmd==='get_sidebar_counts')return {openTasks:0,unreadMail:0}; if(cmd==='list_services'||cmd==='list_obsidian_tasks')return [];
+ if(cmd==='list_mail_accounts')return [{id:'a',provider:'gmail',address:'first@example.invalid',connectionState:'connected'},{id:'b',provider:'gmail',address:'second@example.invalid',connectionState:'connected'}];
+ if(cmd==='get_gmail_setup')return {configured:false};
+ if(cmd==='sync_mail_messages')return {order:['1-1'],unread:[],newMessages:[{id:'1-1',threadId:'1',from:'sender',subject:'测试邮件',date:'Mon, 09 Nov 2026 10:00:00 +0000 (GMT)',snippet:'',labels:[]}]};
+ if(cmd==='get_mail_message')return {id:'1-1',threadId:'1',from:'sender',subject:'测试正文',date:'Mon, 09 Nov 2026 10:00:00 +0000 (GMT)',snippet:'',labels:[],htmlBody:'<p>图文正文</p><img data-remote-src="https://img.example.invalid/one.png">'};
+ if(cmd==='agent_chat')return '测试回复'; return null;}};});
+ await page.goto('http://127.0.0.1:4189/'); const nav=n=>page.locator('.sidebar').getByRole('button',{name:n,exact:true});
+ await page.getByRole('heading',{name:/下午好/}).waitFor(); await page.clock.setFixedTime(new Date('2026-11-09T18:01:00+08:00')); await page.evaluate(()=>window.dispatchEvent(new Event('focus'))); await page.getByRole('heading',{name:/晚上好/}).waitFor();
+ await nav('收件箱').click(); await page.getByRole('button',{name:/测试邮件/}).waitFor(); assert((await page.getByRole('button',{name:/测试邮件/}).innerText()).includes('今天 18:00'));
+ await page.getByRole('button',{name:'选择邮箱账号'}).click(); await page.getByRole('menuitem',{name:'second@example.invalid'}).click(); await page.getByRole('button',{name:'选择邮箱账号'}).getByText('second@example.invalid').waitFor();
+ await page.getByRole('button',{name:'选择邮箱账号'}).click(); await page.getByRole('menuitem',{name:'＋ 添加账号'}).click(); await page.getByRole('heading',{name:'添加 Gmail'}).waitFor(); await page.getByRole('button',{name:'关闭添加账号'}).click();
+ const source=await page.getByLabel('拖动排序 Gmail').boundingBox(), target=await page.locator('[data-provider="qq"]').boundingBox(); await page.mouse.move(source.x+source.width/2,source.y+source.height/2);await page.mouse.down();await page.mouse.move(target.x+target.width/2,target.y+target.height/2,{steps:12});await page.mouse.up(); assert.deepEqual(await page.locator('.mail-provider-item').evaluateAll(els=>els.map(x=>x.dataset.provider)),['outlook','qq','gmail','imap']);
+ await page.getByRole('button',{name:/测试邮件/}).click();await page.getByText('图文正文').waitFor();await page.waitForFunction(()=>document.querySelector('.message-html img')?.getAttribute('src')?.includes('img.example.invalid')); assert(images>=1);await page.getByRole('button',{name:'返回列表'}).click();await page.getByRole('button',{name:/测试邮件/}).click();await page.getByText('图文正文').waitFor();assert(await page.locator('.message-html img').getAttribute('src'));assert.equal(await page.getByText('加载邮件中的远程图片').count(),0);
+ await nav('我的 Agent').click();const input=page.getByLabel('给 Agent 发送消息');await input.fill('第一行');await input.press('Shift+Enter');await input.type('第二行');assert((await input.inputValue()).includes('\n'));await input.press('Enter');await page.getByText('测试回复').waitFor();assert.equal(await page.evaluate(()=>window.__calls.filter(([c])=>c==='agent_chat').length),1);
+ assert.deepEqual(errors,[]);console.log('PASS: live greeting, account menu, pointer reorder, automatic images, localized dates and Enter/Shift+Enter'); await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});
