@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
  await page.addInitScript(()=>{window.__calls=[];window.__TAURI_INTERNALS__={invoke:async(cmd,args={})=>{
  window.__calls.push([cmd,args]);
  if(cmd==='get_desktop_context')return {environment:'development',vaultPath:'test',taskDirectory:'test',agents:[{name:'DSH',installed:true}]};
- if(cmd==='get_sidebar_counts')return {openTasks:0,unreadMail:0};
+ if(cmd==='get_sidebar_counts')return {openTasks:3,unreadMail:2};
  if(cmd==='list_obsidian_notes')return Array.from({length:30},(_,i)=>({file:`${i}.md`,title:`测试笔记 ${i}`,preview:'摘要'}));
  if(cmd==='read_obsidian_note')return '# 标题\n\n**加粗内容**\n\n- 项目一\n\n| 名称 | 状态 |\n|---|---|\n| 项目 | 完成 |\n\n<script>alert(1)</script>';
  if(cmd==='list_obsidian_tasks')return Array.from({length:40},(_,i)=>({id:String(i),title:'任务 '+i,details:'',raw:'',completed:false,file:'test.md',line:i}));
@@ -20,14 +20,24 @@ const assert = require('node:assert/strict');
  return null;}};});
  await page.goto('http://127.0.0.1:4189/'); const nav=name=>page.locator('.sidebar').getByRole('button',{name,exact:true});
  assert.equal(await page.locator('.home-intro .lead, .home-intro .eyebrow').count(),0);
+ assert.equal(await nav('我的 Agent').locator('.nav-badge').count(),0); assert.equal(await nav('待办').locator('.nav-badge').count(),0); await page.waitForFunction(()=>document.querySelectorAll('.nav-badge').length===1);
  await nav('笔记').click();await page.getByRole('button',{name:/测试笔记 0/}).click();
- await page.locator('.note-markdown h1').getByText('标题').waitFor();assert.equal(await page.locator('.note-markdown strong').textContent(),'加粗内容');assert.equal(await page.locator('.note-markdown table td').count(),2);assert.equal(await page.locator('.note-markdown script').count(),0);
+ await page.locator('.note-markdown h1').getByText('标题').waitFor();assert.equal(await page.locator('.note-markdown strong').textContent(),'加粗内容');assert.equal(await page.locator('.note-markdown table td').count(),2);assert.equal(await page.locator('.note-markdown script').count(),0); await page.locator('.note-markdown').evaluate(el=>{const extra=document.createElement('div');extra.style.height='1600px';el.append(extra)}); await page.locator('.notes-content').evaluate(el=>el.scrollTop=1000); await page.waitForTimeout(250); assert(await page.locator('.notes-fixed.compact').count()); assert(await page.getByRole('button',{name:/返回列表/}).isVisible());
  await page.getByRole('button',{name:/返回列表/}).click();
- for(const n of ['待办','笔记','我的服务']){await nav(n).click(); await page.waitForTimeout(300);const section=page.locator('main > section');await section.evaluate(el=>{el.scrollTop=el.scrollHeight});await page.waitForTimeout(200);assert(await section.evaluate(el=>el.classList.contains('module-scrolled')),n+' compact'); assert(await section.locator('.module-sticky span').evaluate(el=>getComputedStyle(el).opacity) > 0,n+' header visible'); }
+ await nav('笔记').click(); const fixedBefore=await page.locator('.notes-fixed').boundingBox(); await page.locator('.notes-content').evaluate(el=>{el.scrollTop=el.scrollHeight}); await page.waitForTimeout(250); assert(await page.locator('.notes-fixed').evaluate(el=>el.classList.contains('compact'))); const fixedAfter=await page.locator('.notes-fixed').boundingBox(); assert(Math.abs(fixedBefore.y-fixedAfter.y)<1); assert(await page.getByRole('button',{name:'新建笔记'}).isVisible());
+ for(const n of ['待办','我的服务']){await nav(n).click(); await page.waitForTimeout(300);const section=page.locator('main > section');await section.evaluate(el=>{el.scrollTop=el.scrollHeight});await page.waitForTimeout(200);assert(await section.evaluate(el=>el.classList.contains('module-scrolled')),n+' compact'); assert(await section.locator('.module-sticky span').evaluate(el=>getComputedStyle(el).opacity) > 0,n+' header visible'); }
  await nav('收件箱').click(); await page.getByRole('button',{name:/mail 0/}).waitFor();let count=await page.evaluate(()=>window.__calls.filter(([c])=>c==='sync_mail_messages').length);
  await page.getByRole('button',{name:/mail 0/}).click();await page.getByText('测试正文').waitFor();await page.waitForFunction(()=>window.__calls.some(([c])=>c==='mark_mail_read'));await page.getByRole('button',{name:/返回列表/}).click();
  assert.equal(await page.getByRole('button',{name:/mail 0/}).locator('[aria-label="未读"]').count(),0);
  await nav('首页').click();await nav('收件箱').click();await page.getByRole('button',{name:/mail 0/}).waitFor();assert.equal(await page.evaluate(()=>window.__calls.filter(([c])=>c==='sync_mail_messages').length),count);
  await page.evaluate(()=>sessionStorage.setItem('fail-mark','1'));await page.getByRole('button',{name:/mail 2/}).click();await page.getByText(/未能同步已读状态/).waitFor();await page.getByRole('button',{name:/返回列表/}).click();assert.equal(await page.getByRole('button',{name:/mail 2/}).locator('[aria-label="未读"]').count(),1);
+ for (const size of [{width:1350,height:900},{width:1680,height:900},{width:700,height:500}]) {
+   await page.setViewportSize(size); await nav('首页').click(); await page.waitForTimeout(300);
+   const home=await page.evaluate(()=>{const p=document.querySelector('.home').getBoundingClientRect(),c=document.querySelector('.home-composition').getBoundingClientRect();return {top:c.top-p.top,bottom:p.bottom-c.bottom,doc:document.documentElement.scrollHeight,viewport:document.documentElement.clientHeight};});
+   assert(home.doc<=home.viewport+1, `document overflows ${JSON.stringify(size)}`);
+   if(size.height>=700) assert(Math.abs(home.top-home.bottom)<100,`home not centered ${JSON.stringify(size)} ${JSON.stringify(home)}`);
+   for(const name of ['待办','热点','我的 Agent','笔记','收件箱','我的服务']) { await nav(name).click(); await page.waitForTimeout(100); assert.equal(await page.evaluate(()=>document.documentElement.scrollHeight<=document.documentElement.clientHeight+1),true,`${name} page overflow`); if(name==='我的 Agent' && size.height>=700) { const balance=await page.evaluate(()=>{const section=document.querySelector('main > section').getBoundingClientRect(),heading=document.querySelector('main > section h1').getBoundingClientRect(),list=document.querySelector('main > section .module-list').getBoundingClientRect(); return Math.abs((heading.top-section.top)-(section.bottom-list.bottom));}); assert(balance<100,`short module not centered: ${balance}`); } }
+ }
+ await page.locator('.theme-toggle').click(); await nav('笔记').click(); await page.getByRole('button',{name:/测试笔记 0/}).waitFor(); await page.locator('.notes-content').evaluate(el=>el.scrollTop=el.scrollHeight); await page.waitForTimeout(250); assert(await page.locator('.app-shell.night').count()); assert(await page.locator('.notes-fixed.compact').count()); assert(await page.getByRole('button',{name:'新建笔记'}).isVisible());
  assert.deepEqual(errors,[]);console.log('PASS: Markdown, sticky modules, seen success/failure, revisit without resync');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});
