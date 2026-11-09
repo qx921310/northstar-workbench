@@ -13,7 +13,7 @@ export type ServiceStatus = {
   checks: Array<{ name: string; state: string; healthy: boolean }>; error?: string;
 };
 export type MailAccount = { id: string; provider: "gmail" | "outlook" | "qq" | "imap"; address: string; label: string; authType: "oauth" | "app_password"; connectionState: "setup_required" | "connected" | "error" };
-export type GmailSetup = { configured: boolean; clientIdHint?: string };
+export type GmailSetup = { configured: boolean; clientIdHint?: string; clientSecretConfigured: boolean };
 export type MailMessage = { id: string; threadId: string; from: string; subject: string; date: string; snippet: string; labels: string[]; body?: string };
 export type SidebarCounts = { openTasks: number; unreadMail: number };
 export type CustomService = { id: string; name: string; target: string; kind: "http" | "tcp" };
@@ -60,6 +60,7 @@ export const desktopApi = {
   registerMailAccount: (provider: MailAccount["provider"], address: string, label: string) => invoke<MailAccount>("register_mail_account", { provider, address, label }),
   getGmailSetup: () => invoke<GmailSetup>("get_gmail_setup"),
   setGmailClientId: (clientId: string) => invoke<GmailSetup>("set_gmail_client_id", { clientId }),
+  setGmailClientSecret: (clientSecret: string) => invoke<GmailSetup>("set_gmail_client_secret", { clientSecret }),
   connectGmail: () => invoke<MailAccount>("connect_gmail"),
   cancelGmailAuth: () => invoke<void>("cancel_gmail_auth"),
   listMailMessages: (accountId: string) => invoke<MailMessage[]>("list_mail_messages", { accountId }),

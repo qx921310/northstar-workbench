@@ -123,6 +123,7 @@ struct MailAccount {
 struct GmailSetup {
     configured: bool,
     client_id_hint: Option<String>,
+    client_secret_configured: bool,
 }
 
 #[derive(Serialize)]
@@ -260,6 +261,27 @@ fn gmail_credential_service() -> &'static str {
     if is_development() { "Northstar Workbench Dev Gmail" } else { "Northstar Workbench Gmail" }
 }
 
+fn gmail_client_secret_entry(client_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(gmail_oauth_credential_service(), client_id).map_err(|_| "无法打开客户端密钥存储".to_string())
+}
+
+fn gmail_oauth_credential_service() -> &'static str {
+    if is_development() { "Northstar Workbench Dev Google OAuth" } else { "Northstar Workbench Google OAuth" }
+}
+
+fn read_gmail_client_secret(client_id: &str) -> Result<Option<String>, String> {
+    match gmail_client_secret_entry(client_id)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("无法读取客户端密钥，请检查 Windows 凭据管理器".into()),
+    }
+}
+
+fn token_parameters_with_secret<'a>(mut parameters: Vec<(&'a str, &'a str)>, secret: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    if let Some(secret) = secret { parameters.push(("client_secret", secret)); }
+    parameters
+}
+
 fn read_gmail_token(account_id: &str) -> Result<GmailToken, String> {
     let value = gmail_token_entry(account_id)?
         .get_password()
@@ -331,21 +353,46 @@ fn gmail_callback(listener: TcpListener, expected_state: &str, cancelled: &Atomi
         .get("code")
         .cloned()
         .ok_or_else(|| "Google 未返回授权码".to_string())?;
-    let response = "<html><meta charset=\"utf-8\"><body><h2>北极星已收到授权</h2><p>可以关闭此页面并返回工作台。</p></body></html>";
+    let response = "<html><meta charset=\"utf-8\"><body><h2>北极星已收到授权码</h2><p>邮箱连接尚未完成，请返回北极星查看最终结果。此页面可以关闭。</p></body></html>";
     let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes());
     Ok(code)
 }
 
 fn gmail_token_request(parameters: &[(&str, &str)]) -> Result<serde_json::Value, String> {
-    reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|error| error.to_string())?
-        .post("https://oauth2.googleapis.com/token")
+    gmail_token_request_to("https://oauth2.googleapis.com/token", parameters)
+}
+
+fn gmail_token_request_to(endpoint: &str, parameters: &[(&str, &str)]) -> Result<serde_json::Value, String> {
+    let response = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|_| "无法初始化 Google 连接".to_string())?
+        .post(endpoint)
         .form(parameters)
         .send()
-        .map_err(|error| format!("请求 Google 令牌失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Google 令牌请求被拒绝：{error}"))?
+        .map_err(|_| "无法连接 Google 令牌服务，请检查网络后重试".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        let value = response.json::<serde_json::Value>().unwrap_or_default();
+        return Err(gmail_token_error(status.as_u16(), value.get("error").and_then(|v| v.as_str()), value.get("error_description").and_then(|v| v.as_str())));
+    }
+    response
         .json()
         .map_err(|error| format!("Google 令牌响应无效：{error}"))
+}
+
+fn gmail_token_error(status: u16, code: Option<&str>, description: Option<&str>) -> String {
+    let description = description.unwrap_or_default().to_ascii_lowercase();
+    if description.contains("client_secret") && (description.contains("missing") || description.contains("required")) {
+        return format!("Google 令牌交换失败（HTTP {status}）：Google 提示此客户端需要 client_secret；请反馈此提示，勿发送密钥。");
+    }
+    let (safe_code, detail) = match code {
+        Some("invalid_grant") => ("invalid_grant", "授权码无效、已过期或与本次请求不匹配；请重新开始授权。"),
+        Some("invalid_client") => ("invalid_client", "Google 未接受客户端配置；请确认客户端 ID 和密钥属于同一个桌面应用。"),
+        Some("invalid_request") => ("invalid_request", "Google 未接受授权请求参数；请重试，如仍失败请反馈此错误代码。"),
+        Some("unauthorized_client") => ("unauthorized_client", "当前客户端不支持此授权方式；请检查 Google Cloud 中的客户端类型。"),
+        Some("access_denied") => ("access_denied", "Google 未批准本次授权；请检查账户和应用授权设置。"),
+        Some("invalid_scope") => ("invalid_scope", "Google 未接受请求的邮箱权限；请检查 Gmail API 和授权范围设置。"),
+        _ => ("unknown_error", "Google 未提供可识别的错误代码；请稍后重试。"),
+    };
+    format!("Google 令牌交换失败（HTTP {status}，{safe_code}）：{detail}")
 }
 
 fn refresh_gmail_token(account_id: &str, client_id: &str) -> Result<GmailToken, String> {
@@ -357,11 +404,13 @@ fn refresh_gmail_token(account_id: &str, client_id: &str) -> Result<GmailToken, 
         .refresh_token
         .as_deref()
         .ok_or_else(|| "Gmail 授权已过期，请重新连接".to_string())?;
-    let value = gmail_token_request(&[
+    let secret = read_gmail_client_secret(client_id)?;
+    let parameters = token_parameters_with_secret(vec![
         ("client_id", client_id),
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
-    ])?;
+    ], secret.as_deref());
+    let value = gmail_token_request(&parameters)?;
     let access_token = value["access_token"]
         .as_str()
         .ok_or_else(|| "Google 未返回访问令牌".to_string())?
@@ -1132,6 +1181,10 @@ async fn get_sidebar_counts() -> Result<SidebarCounts, String> {
 #[tauri::command]
 fn get_gmail_setup() -> Result<GmailSetup, String> {
     let settings = read_mail_settings()?;
+    let client_secret_configured = match settings.gmail_client_id.as_deref() {
+        Some(client_id) => read_gmail_client_secret(client_id)?.is_some(),
+        None => false,
+    };
     let client_id_hint = settings.gmail_client_id.map(|value| {
         let prefix: String = value.chars().take(12).collect();
         format!("{prefix}…")
@@ -1139,7 +1192,17 @@ fn get_gmail_setup() -> Result<GmailSetup, String> {
     Ok(GmailSetup {
         configured: client_id_hint.is_some(),
         client_id_hint,
+        client_secret_configured,
     })
+}
+
+#[tauri::command]
+fn set_gmail_client_secret(client_secret: String) -> Result<GmailSetup, String> {
+    let client_id = read_mail_settings()?.gmail_client_id.ok_or("请先配置 Google 客户端 ID")?;
+    let secret = client_secret.trim();
+    if secret.is_empty() || secret.contains(['\r', '\n']) { return Err("请输入有效的客户端密钥".into()); }
+    gmail_client_secret_entry(&client_id)?.set_password(secret).map_err(|_| "无法保存客户端密钥至 Windows 凭据管理器".to_string())?;
+    get_gmail_setup()
 }
 
 #[tauri::command]
@@ -1194,13 +1257,15 @@ fn connect_gmail_blocking(cancelled: Arc<AtomicBool>) -> Result<MailAccount, Str
         .map_err(|error| format!("无法打开默认浏览器：{error}"))?;
     let code = gmail_callback(listener, &state, &cancelled)?;
     if cancelled.load(Ordering::SeqCst) { return Err("已取消 Gmail 授权".into()); }
-    let token_value = gmail_token_request(&[
+    let secret = read_gmail_client_secret(&client_id)?;
+    let parameters = token_parameters_with_secret(vec![
         ("client_id", &client_id),
         ("code", &code),
         ("code_verifier", &verifier),
         ("grant_type", "authorization_code"),
         ("redirect_uri", &redirect_uri),
-    ])?;
+    ], secret.as_deref());
+    let token_value = gmail_token_request(&parameters)?;
     let access_token = token_value["access_token"]
         .as_str()
         .ok_or_else(|| "Google 未返回访问令牌".to_string())?
@@ -1428,6 +1493,7 @@ pub fn run() {
             get_sidebar_counts,
             get_gmail_setup,
             set_gmail_client_id,
+            set_gmail_client_secret,
             connect_gmail,
             cancel_gmail_auth,
             list_mail_messages,
@@ -1444,6 +1510,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_requests_include_secret_only_when_configured() {
+        let without = token_parameters_with_secret(vec![("grant_type", "refresh_token")], None);
+        assert_eq!(without.len(), 1);
+        let with = token_parameters_with_secret(vec![("grant_type", "authorization_code")], Some("test-only"));
+        assert!(with.contains(&("client_secret", "test-only")));
+        let refresh = token_parameters_with_secret(vec![("grant_type", "refresh_token")], Some("test-only"));
+        assert!(refresh.contains(&("client_secret", "test-only")));
+    }
+
+    #[test]
+    fn token_request_posts_secret_to_local_mock_only() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+                    }).unwrap();
+                    if bytes.len() >= header_end + 4 + length { break; }
+                }
+            }
+            let body = String::from_utf8(bytes).unwrap();
+            assert!(body.contains("client_secret=test-only"));
+            let response = b"{\"access_token\":\"test-token\"}";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();
+            stream.write_all(response).unwrap();
+        });
+        let params = token_parameters_with_secret(vec![("grant_type", "authorization_code")], Some("test-only"));
+        let result = gmail_token_request_to(&format!("http://{address}/token"), &params).unwrap();
+        assert_eq!(result["access_token"], "test-token");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn gmail_token_errors_explain_known_codes_without_echoing_sensitive_input() {
+        let known = gmail_token_error(400, Some("invalid_grant"), None);
+        assert!(known.contains("invalid_grant"));
+        assert!(known.contains("重新开始授权"));
+        let unknown = gmail_token_error(400, Some("secret-token-from-server"), Some("secret-token-from-server"));
+        assert!(unknown.contains("unknown_error"));
+        assert!(!unknown.contains("secret-token-from-server"));
+        let missing = gmail_token_error(400, Some("invalid_request"), Some("client_secret is missing: sensitive-value"));
+        assert!(missing.contains("需要 client_secret"));
+        assert!(!missing.contains("sensitive-value"));
+    }
+
+    #[test]
     fn gmail_wait_can_be_cancelled_without_a_browser_callback() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1451,6 +1574,19 @@ mod tests {
         let worker = std::thread::spawn(move || gmail_callback(listener, "test-state", &flag));
         cancelled.store(true, Ordering::SeqCst);
         assert_eq!(worker.join().unwrap().unwrap_err(), "已取消 Gmail 授权");
+    }
+
+    #[test]
+    fn gmail_callback_does_not_claim_connection_is_complete() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || gmail_callback(listener, "local-test-state", &AtomicBool::new(false)));
+        let mut browser = TcpStream::connect(address).unwrap();
+        browser.write_all(b"GET /?state=local-test-state&code=local-test-code HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).unwrap();
+        assert!(response.contains("邮箱连接尚未完成"));
+        assert_eq!(worker.join().unwrap().unwrap(), "local-test-code");
     }
 
     #[cfg(any(debug_assertions, feature = "dev-isolation"))]
@@ -1464,6 +1600,7 @@ mod tests {
         assert!(mail_settings_path().starts_with(app_data_dir()));
         assert!(custom_services_path().starts_with(app_data_dir()));
         assert_eq!(gmail_credential_service(), "Northstar Workbench Dev Gmail");
+        assert_eq!(gmail_oauth_credential_service(), "Northstar Workbench Dev Google OAuth");
     }
 
     #[test]
