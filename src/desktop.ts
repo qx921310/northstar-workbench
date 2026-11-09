@@ -46,6 +46,9 @@ function readOnce<T>(command: string, args?: Record<string, unknown>): Promise<T
 }
 
 export const desktopApi = {
+  uiUpdateReady: () => invoke<number>("ui_update_ready"),
+  checkUiUpdate: () => invoke<{revision: number} | null>("check_ui_update"),
+  applyUiUpdate: () => invoke<void>("apply_ui_update"),
   listTasks: () => readOnce<ObsidianTask[]>("list_obsidian_tasks"),
   createTask: (title: string, details: string, reminderAt?: string) => invoke<ObsidianTask>("create_obsidian_task", { title, details, reminderAt }),
   changeTask: (task: ObsidianTask, title?: string, details?: string, reminderAt?: string) => invoke<void>("change_northstar_task", { line: task.line, expected: task.raw, title, details, reminderAt }),

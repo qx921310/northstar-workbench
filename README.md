@@ -33,6 +33,18 @@ npm run desktop:build
 
 ## 更新
 
-Windows 应用启动后会检查本仓库 Releases 中的 `latest.json`。发现较新版本时，首页版本号旁显示更新入口；更新包必须通过应用内置公钥验证，才能安装。首次安装及手动下载请使用 Releases 中的 Windows 安装包。
+Windows 应用分别检查原生更新和界面更新。原生更新使用 Releases 中的 `latest.json` 和签名安装包，需要退出并重启应用；界面更新使用对应桌面壳版本的 `ui-v<版本>` 预发布版，验证签名和版本兼容性后只刷新界面，窗口不退出。界面更新可能清除未保存的输入，因此应用前需要用户确认。新界面启动未确认时自动回退；已确认的更新包会在每次启动时重新验证签名。桌面壳更新后，旧壳的界面补丁不会应用到新壳。
 
 发布更新时需要持有项目更新签名私钥。私钥和密码不得提交到仓库；构建时通过 `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量提供。发布包需同时上传安装程序、签名文件和包含版本、下载 URL 与签名内容的 `latest.json`。不要丢失私钥，否则已安装版本将无法验证以新密钥签名的更新。
+
+仅修改前端且兼容当前桌面壳时，可以发布界面更新。先提交并推送修改，在提供签名密钥的环境下执行：
+
+```powershell
+./scripts/build-ui-update.ps1 -Revision 1
+# 可选：使用内置公钥验证生成的签名及当前桌面壳版本
+$env:NORTHSTAR_UI_BUNDLE_TEST = (Resolve-Path 'src-tauri/target/ui-release/ui-1.zip').Path
+Push-Location src-tauri; cargo test ui_updates::tests::locally_built_release_bundle_verifies_when_requested; Pop-Location
+./scripts/publish-ui-update.ps1 -Revision 1
+```
+
+同一桌面壳的修订号必须递增。发布脚本会将包和签名上传到 `ui-v<版本>` 预发布版；该预发布版不替代正式安装包的 `latest`。需要新增或修改 Rust 命令、权限、依赖或其他原生能力时，必须发布新的桌面壳及签名安装包，不能只发布界面包。仅发布完整安装包不会自动生成界面更新。

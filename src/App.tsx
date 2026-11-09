@@ -44,6 +44,8 @@ export default function App() {
   const [sidebarCounts, setSidebarCounts] = useState<SidebarCounts | null>(null);
   const [version, setVersion] = useState(browserVersion);
   const [update, setUpdate] = useState<Update | null>(null);
+  const [uiRevision, setUiRevision] = useState(0);
+  const [uiUpdate, setUiUpdate] = useState<{revision: number} | null>(null);
   const [updateState, setUpdateState] = useState("");
 
   useEffect(() => { void getDesktopContext().then(setDesktop).catch(() => setDesktop(null)); }, []);
@@ -52,10 +54,28 @@ export default function App() {
     let active = true;
     void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(value => { if (active) setVersion(value); }).catch(() => undefined);
     void import("@tauri-apps/plugin-updater").then(({ check }) => check()).then(value => { if (active) setUpdate(value); else void value?.close(); }).catch(() => { if (active) setUpdateState("更新检查暂不可用"); });
-    return () => { active = false; };
+    let uiReady = false, checkingUi = false, lastUiCheck = 0;
+    const checkUi = async () => {
+      if (!active || !uiReady || checkingUi || Date.now() - lastUiCheck < 30000) return;
+      checkingUi = true; lastUiCheck = Date.now();
+      try { const next = await desktopApi.checkUiUpdate(); if (active) { setUiUpdate(next); setUpdateState(value => value.startsWith("界面更新检查失败：") ? "" : value); } }
+      catch (error) { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); }
+      finally { checkingUi = false; }
+    };
+    void desktopApi.uiUpdateReady().then(revision => { if (!active) return; setUiRevision(revision); uiReady = true; void checkUi(); }).catch(error => { if (active) setUpdateState(`界面更新检查失败：${error instanceof Error ? error.message : String(error)}`); });
+    const timer = window.setInterval(() => void checkUi(), 5 * 60 * 1000);
+    const onFocus = () => void checkUi(); window.addEventListener("focus", onFocus);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
   }, [desktop]);
   const installUpdate = async () => {
-    if (!update || updateState === "正在下载并安装更新…") return;
+    if ((!update && !uiUpdate) || updateState.startsWith("正在")) return;
+    if (!update && uiUpdate) {
+      if (!window.confirm("发现界面更新，应用窗口会刷新，未保存的输入可能丢失。现在更新？")) return;
+      setUpdateState("正在应用界面更新…");
+      try { await desktopApi.applyUiUpdate(); } catch (error) { setUpdateState(`界面更新失败：${error instanceof Error ? error.message : String(error)}`); }
+      return;
+    }
+    if (!update) return;
     if (!window.confirm(`发现新版本 V${update.version}，现在下载并安装？应用将退出并重新启动。`)) return;
     setUpdateState("正在下载并安装更新…");
     try { await update.downloadAndInstall(); } catch (error) { setUpdateState(`更新失败：${error instanceof Error ? error.message : String(error)}`); }
@@ -68,7 +88,7 @@ export default function App() {
     <div className="workspace">
       <aside className="sidebar"><nav aria-label="主导航">{nav.map(item => { const badge = badgeFor(item.id); const icons: Record<Page, string> = { home: "⌂", tasks: "✓", trending: "⌁", agents: "✦", notes: "▤", inbox: "✉", services: "◎" }; return <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><span className="dock-icon" aria-hidden="true">{icons[item.id]}</span><span className="dock-label">{item.label}</span>{badge !== undefined && badge > 0 && <small className="nav-badge">{badge > 99 ? "99+" : badge}</small>}</button>; })}</nav></aside>
       <main>{page === "home" ? <Home clock={clock} previewAlert={hasAlert} onNavigate={setPage} desktop={desktop} unreadMail={sidebarCounts?.unreadMail} /> : page === "trending" ? <TrendingPage onNavigate={setPage} /> : page === "tasks" ? <TasksPage onNavigate={setPage} desktop={desktop} /> : page === "notes" ? <NotesPage onNavigate={setPage} desktop={desktop} /> : page === "inbox" ? <InboxPage onNavigate={setPage} desktop={desktop} /> : page === "services" ? <ServicesPage onNavigate={setPage} desktop={desktop} /> : <PageContent page={page} onNavigate={setPage} desktop={desktop} />}</main>
-    </div>{page === "home" && <div className="version-indicator"><span>V{version}</span>{update && <button onClick={() => void installUpdate()} aria-label={`更新至版本 ${update.version}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>}
+    </div>{page === "home" && <div className="version-indicator"><span>V{version}{uiRevision > 0 ? ` · 界面 ${uiRevision}` : ""}</span>{(update || uiUpdate) && <button disabled={updateState.startsWith("正在")} onClick={() => void installUpdate()} aria-label={update ? `更新至版本 ${update.version}` : `应用界面更新 ${uiUpdate?.revision}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>}
   </div>;
 }
 

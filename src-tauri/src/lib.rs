@@ -119,6 +119,7 @@ struct MailAccount {
 }
 
 mod imap_mail;
+mod ui_updates;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1497,7 +1498,12 @@ async fn list_services() -> Result<Vec<ServiceStatus>, String> {
 }
 
 pub fn run() {
+    let ui_state = ui_updates::UiState::new();
+    let mut context = tauri::generate_context!();
+    let fallback = context.set_assets(Box::new(ui_updates::EmptyAssets));
+    context.set_assets(Box::new(ui_updates::Overlay { fallback, state: ui_state.clone() }));
     tauri::Builder::default()
+        .manage(ui_state)
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let expected_identifier = if is_development() { "com.xu3ji.northstar-workbench.dev" } else { "com.xu3ji.northstar-workbench" };
@@ -1519,6 +1525,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_desktop_context,
+            ui_updates::check_ui_update,
+            ui_updates::apply_ui_update,
+            ui_updates::ui_update_ready,
             list_obsidian_tasks,
             create_obsidian_task,
             change_northstar_task,
@@ -1542,7 +1551,7 @@ pub fn run() {
             register_custom_service,
             remove_custom_service
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Northstar Workbench");
 }
 
