@@ -483,14 +483,22 @@ fn gmail_header(value: &serde_json::Value, name: &str) -> String {
 }
 
 // Only allow inert formatting; email HTML must never execute code or load remote resources.
-fn sanitize_mail_html(html: &str) -> Option<String> {
-    let tags = ["p", "div", "span", "b", "strong", "em", "i", "u", "s", "br", "hr", "ul", "ol", "li", "blockquote", "pre", "code", "table", "tbody", "thead", "tfoot", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"].into_iter().collect();
-    let cleaned = ammonia::Builder::default()
-        .tags(tags)
-        .generic_attributes(Default::default())
-        .tag_attributes(Default::default())
-        .link_rel(None)
-        .clean(html).to_string();
+fn sanitize_mail_html(html: &str) -> Option<String> { sanitize_mail_html_with_inline(html, Default::default()) }
+fn sanitize_mail_html_with_inline(html: &str, inline: std::collections::HashMap<String, String>) -> Option<String> {
+    let tags = ["p", "div", "span", "b", "strong", "em", "i", "u", "s", "br", "hr", "ul", "ol", "li", "blockquote", "pre", "code", "table", "tbody", "thead", "tfoot", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "img"].into_iter().collect();
+    let mut attrs = std::collections::HashMap::new(); attrs.insert("img", ["src", "alt"].into_iter().collect());
+    let cleaned = ammonia::Builder::default().tags(tags).generic_attributes(Default::default()).tag_attributes(attrs).url_schemes(["https", "data", "cid"].into_iter().collect()).url_relative(ammonia::UrlRelative::Deny).link_rel(None)
+        .attribute_filter(move |element, attribute, value| {
+            if element == "img" && attribute == "src" {
+                if let Some(cid) = value.strip_prefix("cid:") { return inline.get(&cid.trim_matches(['<', '>']).to_ascii_lowercase()).cloned().map(std::borrow::Cow::Owned); }
+                let url = url::Url::parse(value).ok()?;
+                let host = match url.host()? { url::Host::Domain(host) => host.to_ascii_lowercase(), _ => return None };
+                if url.scheme() != "https" || host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || !url.username().is_empty() || url.password().is_some() { return None; }
+            }
+            Some(std::borrow::Cow::Borrowed(value))
+        }).clean(html).to_string();
+    // Only img can have src; keep external requests inert until the reader opts in.
+    let cleaned = cleaned.replace(" src=\"https://", " data-remote-src=\"https://");
     (!cleaned.trim().is_empty()).then_some(cleaned)
 }
 
@@ -1560,6 +1568,13 @@ async fn batch_mail_action(account_id: String, message_ids: Vec<String>, categor
         let client_id = read_mail_settings()?.gmail_client_id.ok_or("请先配置 Google OAuth Client ID")?;
         let token = refresh_gmail_token(&account.id, &client_id)?;
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).build().map_err(|_| "无法初始化 Gmail 连接")?;
+        if action == "read" {
+            let response = client.post("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify").bearer_auth(&token.access_token)
+                .json(&serde_json::json!({"ids":message_ids,"removeLabelIds":["UNREAD"]})).send().map_err(|_| "已读操作未确认，请刷新并检查邮箱")?;
+            if response.status() == reqwest::StatusCode::FORBIDDEN { return Err("授权不足，请重新连接 Gmail 并授权".into()); }
+            response.error_for_status().map_err(|_| "已读操作未确认，请刷新并检查邮箱")?;
+            return Ok(MailBatchResult { succeeded:message_ids, failed:Vec::new() });
+        }
         let mut succeeded = Vec::new(); let mut failed = Vec::new();
         for id in &message_ids {
             let path = if action == "trash" { "trash" } else { "modify" };
@@ -1638,6 +1653,59 @@ async fn list_services() -> Result<Vec<ServiceStatus>, String> {
     tauri::async_runtime::spawn_blocking(read_services).await.map_err(|e| e.to_string())?
 }
 
+static AGENT_REQUESTS: OnceLock<Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+fn agent_command(agent: &str) -> Result<Command, String> {
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from).ok_or("无法定位本机程序")?;
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or("无法定位本机程序")?;
+    match agent {
+        "codex" => { let exe = appdata.join("npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe"); if !exe.is_file() { return Err("未找到本机 Codex 程序".into()); } let mut cmd = hidden_command(exe.to_string_lossy().as_ref()); cmd.args(["exec", "--skip-git-repo-check", "--color", "never", "-"]); Ok(cmd) },
+        "pi" => { let script = appdata.join("npm/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"); if !script.is_file() { return Err("未找到本机 Pi 程序".into()); } let mut cmd = hidden_command("node"); cmd.arg(script).arg("--print"); Ok(cmd) },
+        "dsh" => { let cache = local.join("npm-cache/_npx"); let script = fs::read_dir(cache).map_err(|_| "未找到本机 DSH 程序")?.filter_map(Result::ok).map(|entry| entry.path().join("node_modules/@deepseek-ai/dsh/lib/bin.js")).find(|path| path.is_file()).ok_or("未找到本机 DSH 程序")?; let mut cmd = hidden_command("node"); cmd.arg(script).args(["headless", "-"]); Ok(cmd) },
+        _ => Err("不支持的 Agent".into()),
+    }
+}
+fn drain_limited<R: Read>(mut stream: R) -> Vec<u8> {
+    let mut kept = Vec::new(); let mut buffer = [0u8; 8192];
+    while let Ok(count) = stream.read(&mut buffer) { if count == 0 { break; } let available = 1_048_576usize.saturating_sub(kept.len()); kept.extend_from_slice(&buffer[..count.min(available)]); }
+    kept
+}
+fn run_agent(mut command: Command, prompt: &str, cancel: &AtomicBool) -> Result<String, String> {
+    use std::process::Stdio;
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let work = PathBuf::from("C:/CodeClone"); if work.is_dir() { command.current_dir(work); }
+    let mut child = command.spawn().map_err(|_| "无法启动本机 Agent，请检查安装状态".to_string())?;
+    let stdout = child.stdout.take().ok_or("无法读取 Agent 输出")?; let stderr = child.stderr.take().ok_or("无法读取 Agent 错误")?;
+    let (out_tx, out_rx) = std::sync::mpsc::channel(); let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let _ = out_tx.send(drain_limited(stdout)); }); std::thread::spawn(move || { let _ = err_tx.send(drain_limited(stderr)); });
+    if let Some(mut stdin) = child.stdin.take() { let input = prompt.as_bytes().to_vec(); std::thread::spawn(move || { let _ = stdin.write_all(&input); }); }
+    let started = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::SeqCst) || started.elapsed() > Duration::from_secs(180) {
+            #[cfg(windows)] { let _ = hidden_command("taskkill.exe").args(["/PID", &child.id().to_string(), "/T", "/F"]).status(); }
+            let _ = child.kill(); let _ = child.wait();
+            return Err(if cancel.load(Ordering::SeqCst) { "已停止生成" } else { "Agent 响应超时，请重试" }.into());
+        }
+        match child.try_wait() { Ok(Some(status)) => break status, Ok(None) => std::thread::sleep(Duration::from_millis(100)), Err(_) => { let _ = child.kill(); let _ = child.wait(); return Err("无法读取 Agent 运行状态".into()); } }
+    };
+    let output = String::from_utf8_lossy(&out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()).trim().to_string(); let _ = err_rx.recv_timeout(Duration::from_secs(2));
+    if !status.success() { return Err(format!("Agent 运行失败（退出码 {}），请检查本机登录和配置", status.code().unwrap_or(-1))); }
+    if output.is_empty() { Err("Agent 没有返回文本".into()) } else { Ok(output) }
+}
+#[tauri::command]
+async fn agent_chat(agent: String, request_id: String, prompt: String) -> Result<String, String> {
+    if request_id.is_empty() || request_id.len() > 80 || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') || prompt.trim().is_empty() || prompt.len() > 80_000 { return Err("消息参数无效".into()); }
+    let cancel = Arc::new(AtomicBool::new(false));
+    { let mut running = AGENT_REQUESTS.get_or_init(Default::default).lock().map_err(|_| "Agent 状态不可用")?; if running.contains_key(&request_id) { return Err("请求已存在".into()); } running.insert(request_id.clone(), cancel.clone()); }
+    let result = tauri::async_runtime::spawn_blocking(move || agent_command(&agent).and_then(|cmd| run_agent(cmd, &prompt, &cancel))).await.map_err(|_| "Agent 任务失败".to_string());
+    if let Ok(mut running) = AGENT_REQUESTS.get_or_init(Default::default).lock() { running.remove(&request_id); }
+    result?
+}
+#[tauri::command]
+fn cancel_agent_chat(request_id: String) -> Result<(), String> {
+    if let Some(cancel) = AGENT_REQUESTS.get_or_init(Default::default).lock().map_err(|_| "Agent 状态不可用")?.get(&request_id) { cancel.store(true, Ordering::SeqCst); }
+    Ok(())
+}
+
 pub fn run() {
     let ui_state = ui_updates::UiState::new();
     let mut context = tauri::generate_context!();
@@ -1695,6 +1763,8 @@ pub fn run() {
             get_mail_message,
             mark_mail_read,
             batch_mail_action,
+            agent_chat,
+            cancel_agent_chat,
             register_custom_service,
             remove_custom_service
         ])
@@ -1971,7 +2041,9 @@ mod html_mail_regression_tests {
         let message = mail_message_from_gmail(&input, true);
         let html = message.html_body.unwrap();
         assert!(html.contains("优惠邮件") && html.contains("欢迎") && html.contains("链接"));
-        for unsafe_part in ["onclick", "script", "tracker.invalid", "href", "style", "alert(1)"] { assert!(!html.contains(unsafe_part), "{unsafe_part}"); }
+        assert!(html.contains("data-remote-src=\"https://tracker.invalid/pixel\""));
+        assert!(!html.contains(" src=\""));
+        for unsafe_part in ["onclick", "script", "href", "style", "alert(1)"] { assert!(!html.contains(unsafe_part), "{unsafe_part}"); }
         assert!(message.body.is_none());
         assert!(mail_message_from_gmail(&input, false).html_body.is_none());
     }
@@ -2043,4 +2115,17 @@ mod task_lifecycle_regression_tests {
         assert!(!valid_reminder_at("2027-03-01T24:00"));
         assert!(!valid_reminder_at("2027-03-01T12:60"));
     }
+}
+
+#[cfg(all(test, windows))]
+mod agent_runner_regression_tests {
+    use super::*;
+    #[test]
+    fn sends_text_over_stdin_without_shell_interpolation() {
+        let mut command = hidden_command("cmd.exe"); command.args(["/D", "/C", "more"]);
+        let result = run_agent(command, "test & echo NOT_A_COMMAND\r\n", &AtomicBool::new(false)).unwrap();
+        assert!(result.contains("test & echo NOT_A_COMMAND"));
+    }
+    #[test]
+    fn rejects_unknown_agent() { assert!(agent_command("unknown").is_err()); }
 }

@@ -1,5 +1,6 @@
 use super::{is_development, read_mail_accounts, write_mail_accounts, MailAccount, MailMessage, MailSyncResult};
 use mailparse::MailHeaderMap;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -75,7 +76,17 @@ fn parse_message(id: String, bytes: &[u8], full: bool) -> Result<MailMessage, St
         }
         part.subparts.iter().find_map(|child| body(child, wanted))
     }
-    Ok(MailMessage { thread_id: id.clone(), id, from: parsed.headers.get_first_value("From").unwrap_or_default(), subject: parsed.headers.get_first_value("Subject").unwrap_or_default(), date: parsed.headers.get_first_value("Date").unwrap_or_default(), snippet: String::new(), labels: vec![], body: if full { body(&parsed, "text/plain") } else { None }, html_body: if full { body(&parsed, "text/html").and_then(|html| super::sanitize_mail_html(&html)) } else { None } })
+    fn inline_images(part: &mailparse::ParsedMail<'_>, images: &mut std::collections::HashMap<String, String>) {
+        let mime = part.ctype.mimetype.to_ascii_lowercase();
+        if images.len() < 20 && ["image/png", "image/jpeg", "image/gif", "image/webp"].contains(&mime.as_str()) && part.get_content_disposition().disposition != mailparse::DispositionType::Attachment {
+            if let Some(cid) = part.headers.get_first_value("Content-ID") {
+                if let Ok(bytes) = part.get_body_raw() { if bytes.len() <= 2_097_152 { images.insert(cid.trim().trim_matches(['<','>']).to_ascii_lowercase(), format!("data:{mime};base64,{}", STANDARD.encode(bytes))); } }
+            }
+        }
+        for child in &part.subparts { inline_images(child, images); }
+    }
+    let html_body = if full { body(&parsed, "text/html").and_then(|html| { let mut images = std::collections::HashMap::new(); inline_images(&parsed, &mut images); super::sanitize_mail_html_with_inline(&html, images) }) } else { None };
+    Ok(MailMessage { thread_id: id.clone(), id, from: parsed.headers.get_first_value("From").unwrap_or_default(), subject: parsed.headers.get_first_value("Subject").unwrap_or_default(), date: parsed.headers.get_first_value("Date").unwrap_or_default(), snippet: String::new(), labels: vec![], body: if full { body(&parsed, "text/plain") } else { None }, html_body })
 }
 
 pub(super) fn list(account: &MailAccount, category: &str) -> Result<Vec<MailMessage>, String> {
@@ -177,6 +188,17 @@ fn copy_to_special<T: std::io::Read + std::io::Write>(session: &mut imap::Sessio
     let remaining = session.uid_search(format!("UID {uid}")).map_err(|_| "移动后无法确认，请刷新并检查邮箱".to_string())?;
     if remaining.contains(&uid) { Err("已发送移动请求，但邮件仍在原文件夹，请刷新并检查邮箱".into()) } else { Ok(()) }
 }
+fn batch_seen<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>, entries: &[(String, u32)]) -> Result<super::MailBatchResult, String> {
+    let set = entries.iter().map(|(_, uid)| uid.to_string()).collect::<Vec<_>>().join(",");
+    session.uid_store(&set, "+FLAGS.SILENT (\\Seen)").map_err(|_| "已读操作未确认，请刷新并检查邮箱".to_string())?;
+    let fetched = session.uid_fetch(&set, "(UID FLAGS)").map_err(|_| "已发送已读请求，但无法确认状态，请刷新并检查邮箱".to_string())?;
+    let mut succeeded = Vec::new(); let mut failed = Vec::new();
+    for (id, uid) in entries {
+        if fetched.iter().any(|item| item.uid == Some(*uid) && item.flags().iter().any(|flag| matches!(flag, imap::types::Flag::Seen))) { succeeded.push(id.clone()); }
+        else { failed.push(super::MailBatchFailure { id:id.clone(), error:"服务器未确认已读状态，请刷新后重试".into() }); }
+    }
+    Ok(super::MailBatchResult { succeeded, failed })
+}
 // Never use EXPUNGE or the account's auto-delete setting for a trash operation.
 pub(super) fn batch(account: &MailAccount, ids: &[String], category: &str, action: &str) -> Result<super::MailBatchResult, String> {
     let parsed: Result<Vec<(u32,u32)>, String> = ids.iter().map(|id| {
@@ -189,6 +211,10 @@ pub(super) fn batch(account: &MailAccount, ids: &[String], category: &str, actio
     let parsed = parsed?;
     let (mut session, actual) = open(account, category, true)?;
     if parsed.iter().any(|(validity, _)| *validity != actual) { return Err("邮箱已发生变化，请刷新列表".into()); }
+    if action == "read" {
+        let entries: Vec<_> = ids.iter().zip(parsed.iter()).map(|(id, (_, uid))| (id.clone(), *uid)).collect();
+        let result = batch_seen(&mut session, &entries); let _ = session.logout(); return result;
+    }
     let destination = if action == "read" { None } else {
         let flag = if action == "trash" { "\\Trash" } else { "\\Junk" };
         let folders = session.list(None, Some("*")).map_err(|_| "无法查询邮箱文件夹")?;
@@ -267,6 +293,17 @@ mod tests {
         assert!(String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("UID STORE 42 +FLAGS.SILENT (\\Seen)"));
     }
     #[test]
+    fn batch_read_confirms_flags_with_two_commands() {
+        let responses = b"* OK hello\r\na1 OK logged in\r\na2 OK stored\r\n* 1 FETCH (UID 42 FLAGS (\\Seen))\r\n* 2 FETCH (UID 43 FLAGS ())\r\na3 OK fetched\r\n";
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(RecordingStream { input: Cursor::new(responses.to_vec()), output: output.clone() });
+        client.read_greeting().unwrap(); let mut session = client.login("synthetic", "synthetic").ok().unwrap();
+        let result = batch_seen(&mut session, &[("a".into(), 42), ("b".into(), 43)]).unwrap();
+        assert_eq!(result.succeeded, ["a"]); assert_eq!(result.failed.len(), 1);
+        let commands = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(commands.contains("UID STORE 42,43 +FLAGS.SILENT (\\Seen)")); assert!(commands.contains("UID FETCH 42,43 (UID FLAGS)")); assert!(!commands.contains("UID SEARCH"));
+    }
+    #[test]
     fn trash_copy_never_sends_delete_or_expunge() {
         let responses = b"* OK hello\r\na1 OK logged in\r\na2 OK copied\r\n* SEARCH\r\na3 OK search completed\r\n";
         let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -306,7 +343,13 @@ mod tests {
 #[cfg(test)]
 mod html_regression_tests {
     use super::*;
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::engine::general_purpose::STANDARD;
+    #[test]
+    fn renders_inline_raster_images_but_never_inline_svg() {
+        let raw = b"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x\r\n\r\n--x\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hi</p><img src=\"cid:logo@example\"><img src=\"cid:bad@example\">\r\n--x\r\nContent-Type: image/png\r\nContent-ID: <logo@example>\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--x\r\nContent-Type: image/svg+xml\r\nContent-ID: <bad@example>\r\n\r\n<svg onload=\"evil()\"></svg>\r\n--x--\r\n";
+        let message = parse_message("1-1".into(), raw, true).unwrap(); let html = message.html_body.unwrap();
+        assert!(html.contains("src=\"data:image/png;base64,aGVsbG8=\""), "{html}"); assert!(!html.contains("svg")); assert!(!html.contains("evil"));
+    }
     #[test]
     fn mime_html_only_and_attachments_are_handled() {
         let encoded = STANDARD.encode("<h2>旅行优惠</h2><p>你好</p><img src='https://tracker.invalid/a'>");
@@ -315,7 +358,7 @@ mod html_regression_tests {
         assert!(message.body.is_none());
         let html = message.html_body.unwrap();
         assert!(html.contains("旅行优惠") && html.contains("你好"));
-        assert!(!html.contains("tracker.invalid"));
+        assert!(html.contains("data-remote-src=\"https://tracker.invalid/a\""));
         assert!(parse_message("1-1".into(), raw.as_bytes(), false).unwrap().html_body.is_none());
     }
 }
