@@ -6,7 +6,7 @@ export type DesktopContext = {
 };
 
 export type ObsidianTask = { id: string; title: string; details: string; itemStates?: boolean[]; raw: string; completed: boolean; reminderAt?: string; file: string; line: number };
-export type LocalNote = { id:string; title:string; body:string; revision:number; pushedBody:string | null };
+export type LocalNote = { id:string; title:string; body:string; revision:number; pushedBody:string | null; targetName?:string | null };
 export type ObsidianNote = { file: string; title: string; preview: string };
 export type ServiceStatus = {
   id: string; name: string; description: string; reachable: boolean; latencyMs?: number;

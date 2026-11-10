@@ -7,7 +7,7 @@ use std::{fs, io::{Read,Seek,SeekFrom,Write}, path::{Path,PathBuf}, sync::{Mutex
 static NOTE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub(super) struct LocalNote { id:String, title:String, body:String, revision:u64, pushed_body:Option<String> }
+pub(super) struct LocalNote { id:String, title:String, body:String, revision:u64, pushed_body:Option<String>, #[serde(default)] target_name:Option<String> }
 fn valid_id(id:&str)->bool { id.len()==24 && id.chars().all(|c| c.is_ascii_alphanumeric()) }
 fn atomic_write(path:&Path, data:&[u8])->Result<(),String> {
     let parent=path.parent().ok_or("路径无效")?; fs::create_dir_all(parent).map_err(|_|"无法创建笔记目录")?;
@@ -27,7 +27,7 @@ pub(super) fn list_local_notes()->Result<Vec<LocalNote>,String> {
 #[tauri::command]
 pub(super) fn save_local_note(id:Option<String>,title:String,body:String,expected_revision:Option<u64>)->Result<LocalNote,String> {
  let _guard=NOTE_LOCK.get_or_init(Default::default).lock().map_err(|_|"本地笔记不可用")?; let _file_guard=lock_local_notes()?; let dir=directory(); let title=title.trim().to_string(); if title.is_empty() || title.len()>300 || body.len()>5_000_000 {return Err("请填写标题，正文不能超过 5 MB".into())}
- let mut note=if let Some(id)=id { let n=load(&dir,&id)?; if Some(n.revision)!=expected_revision {return Err("本地笔记已在其他窗口发生变化，请重新打开后再保存".into())} n } else { LocalNote{id:Alphanumeric.sample_string(&mut rand::rng(),24),title:String::new(),body:String::new(),revision:0,pushed_body:None} };
+ let mut note=if let Some(id)=id { let n=load(&dir,&id)?; if Some(n.revision)!=expected_revision {return Err("本地笔记已在其他窗口发生变化，请重新打开后再保存".into())} n } else { LocalNote{id:Alphanumeric.sample_string(&mut rand::rng(),24),title:String::new(),body:String::new(),revision:0,pushed_body:None,target_name:None} };
  note.title=title; note.body=body; note.revision+=1; store(&dir,&note)?; Ok(note)
 }
 #[tauri::command]
@@ -35,7 +35,9 @@ pub(super) fn delete_local_note(id:String,expected_revision:u64)->Result<(),Stri
 fn push_at(dir:&Path,vault:&Path,id:&str,expected_revision:u64)->Result<LocalNote,String> {
  let mut note=load(dir,id)?; if note.revision!=expected_revision {return Err("本地笔记已改变，请重新打开后再同步".into())}
  let root=vault.canonicalize().map_err(|_|"无法访问 Obsidian Vault")?; let folder=root.join("Northstar"); fs::create_dir_all(&folder).map_err(|_|"无法创建同步目录")?; let folder=folder.canonicalize().map_err(|_|"无法访问同步目录")?; if !folder.starts_with(&root) {return Err("同步目录不在 Vault 内".into())}
- let target=folder.join(format!("{id}.md")); let content=format!("# {}\n\n{}",note.title,note.body);
+ let target_name = note.target_name.clone().unwrap_or_else(|| { if note.pushed_body.is_some() { format!("{id}.md") } else { let cleaned:String=note.title.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) {'_'} else {c}).take(60).collect(); let title=cleaned.trim_matches(|c:char| c=='.' || c.is_whitespace()); let title=if title.is_empty(){"笔记"}else{title}; format!("{title}--{id}.md") } });
+ if !target_name.ends_with(&format!("{id}.md")) || target_name.contains(['/', '\\']) || Path::new(&target_name).components().count()!=1 {return Err("同步文件名无效".into())}
+ let target=folder.join(&target_name); let content=format!("# {}\n\n{}",note.title,note.body);
  if target.exists() {
   if target.is_symlink() || !target.canonicalize().is_ok_and(|p|p.starts_with(&folder)) {return Err("同步目标不安全".into())}
   let mut options=fs::OpenOptions::new(); options.read(true).write(true);
@@ -53,12 +55,14 @@ fn push_at(dir:&Path,vault:&Path,id:&str,expected_revision:u64)->Result<LocalNot
   temp.write_all(content.as_bytes()).and_then(|_|temp.as_file().sync_all()).map_err(|_|"无法保存同步文件")?;
   temp.persist_noclobber(&target).map_err(|_|"同步目标已出现或无法写入，请重试")?;
  }
- note.pushed_body=Some(content); note.revision+=1; store(dir,&note)?; Ok(note)
+ note.pushed_body=Some(content); note.target_name=Some(target_name); note.revision+=1; store(dir,&note)?; Ok(note)
 }
 #[tauri::command]
 pub(super) fn push_local_note(id:String,expected_revision:u64)->Result<LocalNote,String> {let _guard=NOTE_LOCK.get_or_init(Default::default).lock().map_err(|_|"本地笔记不可用")?;let _file_guard=lock_local_notes()?;push_at(&directory(),&vault_path(),&id,expected_revision)}
-#[cfg(test)] mod roundtrip_tests { use super::*; #[test] fn second_push_updates_unchanged_target_and_keeps_backup() {let t=tempfile::tempdir().unwrap();let dir=t.path().join("local");let vault=t.path().join("vault");fs::create_dir_all(&vault).unwrap();let n=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"first".into(),revision:1,pushed_body:None};store(&dir,&n).unwrap();let mut n=push_at(&dir,&vault,&n.id,1).unwrap();n.body="second".into();n.revision+=1;store(&dir,&n).unwrap();let n=push_at(&dir,&vault,&n.id,n.revision).unwrap();assert_eq!(fs::read_to_string(vault.join("Northstar").join(format!("{}.md",n.id))).unwrap(),"# title\n\nsecond");assert!(dir.join("backups").exists());} }
-#[cfg(test)] mod tests { use super::*; #[test] fn push_detects_remote_changes_without_overwriting() {let temp=tempfile::tempdir().unwrap(); let dir=temp.path().join("local"); let vault=temp.path().join("vault");fs::create_dir_all(&vault).unwrap();let note=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"one".into(),revision:1,pushed_body:None};store(&dir,&note).unwrap();let n=push_at(&dir,&vault,&note.id,1).unwrap(); let target=vault.join("Northstar").join(format!("{}.md",note.id));fs::write(&target,"external edit").unwrap();let mut changed=n.clone();changed.body="two".into();changed.revision+=1;store(&dir,&changed).unwrap();assert!(push_at(&dir,&vault,&note.id,changed.revision).is_err());assert_eq!(fs::read_to_string(target).unwrap(),"external edit");} }
+#[cfg(test)] mod roundtrip_tests { use super::*; #[test] fn second_push_updates_unchanged_target_and_keeps_backup() {let t=tempfile::tempdir().unwrap();let dir=t.path().join("local");let vault=t.path().join("vault");fs::create_dir_all(&vault).unwrap();let n=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"first".into(),revision:1,pushed_body:None,target_name:None};store(&dir,&n).unwrap();let mut n=push_at(&dir,&vault,&n.id,1).unwrap();n.body="second".into();n.revision+=1;store(&dir,&n).unwrap();let n=push_at(&dir,&vault,&n.id,n.revision).unwrap();assert_eq!(fs::read_to_string(vault.join("Northstar").join(n.target_name.as_ref().unwrap())).unwrap(),"# title\n\nsecond");assert!(dir.join("backups").exists());} }
+#[cfg(test)] mod tests { use super::*; #[test] fn push_detects_remote_changes_without_overwriting() {let temp=tempfile::tempdir().unwrap(); let dir=temp.path().join("local"); let vault=temp.path().join("vault");fs::create_dir_all(&vault).unwrap();let note=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"one".into(),revision:1,pushed_body:None,target_name:None};store(&dir,&note).unwrap();let n=push_at(&dir,&vault,&note.id,1).unwrap(); let target=vault.join("Northstar").join(n.target_name.as_ref().unwrap());fs::write(&target,"external edit").unwrap();let mut changed=n.clone();changed.body="two".into();changed.revision+=1;store(&dir,&changed).unwrap();assert!(push_at(&dir,&vault,&note.id,changed.revision).is_err());assert_eq!(fs::read_to_string(target).unwrap(),"external edit");} }
 
 
-#[cfg(test)] mod deletion_conflict_tests { use super::*; #[test] fn externally_deleted_note_is_not_silently_recreated() {let t=tempfile::tempdir().unwrap();let dir=t.path().join("local");let vault=t.path().join("vault");fs::create_dir_all(&vault).unwrap();let n=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"content".into(),revision:1,pushed_body:None};store(&dir,&n).unwrap();let n=push_at(&dir,&vault,&n.id,1).unwrap();let target=vault.join("Northstar").join(format!("{}.md",n.id));fs::remove_file(&target).unwrap();assert!(push_at(&dir,&vault,&n.id,n.revision).is_err());assert!(!target.exists());} }
+#[cfg(test)] mod deletion_conflict_tests { use super::*; #[test] fn externally_deleted_note_is_not_silently_recreated() {let t=tempfile::tempdir().unwrap();let dir=t.path().join("local");let vault=t.path().join("vault");fs::create_dir_all(&vault).unwrap();let n=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"title".into(),body:"content".into(),revision:1,pushed_body:None,target_name:None};store(&dir,&n).unwrap();let n=push_at(&dir,&vault,&n.id,1).unwrap();let target=vault.join("Northstar").join(n.target_name.as_ref().unwrap());fs::remove_file(&target).unwrap();assert!(push_at(&dir,&vault,&n.id,n.revision).is_err());assert!(!target.exists());} }
+
+#[cfg(test)] mod filename_tests {use super::*; #[test] fn readable_filename_is_safe_and_stable_after_title_change() {let t=tempfile::tempdir().unwrap();let dir=t.path().join("local");let vault=t.path().join("vault");fs::create_dir_all(&vault).unwrap();let n=LocalNote{id:"abcdefghijklmnopqrstuvwx".into(),title:"旅行/计划:示例".into(),body:"content".into(),revision:1,pushed_body:None,target_name:None};store(&dir,&n).unwrap();let mut n=push_at(&dir,&vault,&n.id,1).unwrap();let name=n.target_name.clone().unwrap();assert!(name.starts_with("旅行_计划_示例--"));assert!(vault.join("Northstar").join(&name).exists());n.title="新标题".into();n.revision+=1;store(&dir,&n).unwrap();let n=push_at(&dir,&vault,&n.id,n.revision).unwrap();assert_eq!(n.target_name.as_deref(),Some(name.as_str()));assert_eq!(fs::read_dir(vault.join("Northstar")).unwrap().count(),1);} }
