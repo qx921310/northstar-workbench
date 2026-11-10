@@ -149,6 +149,27 @@ fn sync_folder<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>
     Ok(MailSyncResult { order, unread, new_messages })
 }
 
+pub(super) fn older(account: &MailAccount, category: &str, before: &str) -> Result<Vec<MailMessage>, String> {
+    let (old_validity, old_uid) = before.split_once('-').ok_or("邮件分页标识无效")?;
+    let old_validity: u32 = old_validity.parse().map_err(|_| "邮件分页标识无效")?;
+    let old_uid: u32 = old_uid.parse().map_err(|_| "邮件分页标识无效")?;
+    let (mut session, validity) = open(account, category, false)?;
+    if validity != old_validity { return Err("邮箱状态已变化，请刷新邮件后重试".into()); }
+    let result = older_folder(&mut session, validity, old_uid)?;
+    let _ = session.logout(); Ok(result)
+}
+fn older_folder<T: std::io::Read + std::io::Write>(session: &mut imap::Session<T>, validity: u32, old_uid: u32) -> Result<Vec<MailMessage>, String> {
+    let mut uids: Vec<u32> = session.uid_search("ALL").map_err(|_| "无法查询历史邮件")?.into_iter().filter(|uid| *uid < old_uid).collect();
+    uids.sort_unstable_by(|a,b| b.cmp(a)); uids.truncate(50);
+    let mut result = Vec::new();
+    if !uids.is_empty() {
+        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let fetched = session.uid_fetch(set, "(UID FLAGS BODY.PEEK[HEADER]<0.65536>)").map_err(|_| "无法读取历史邮件")?;
+        for uid in uids { if let Some(item) = fetched.iter().find(|f| f.uid == Some(uid)) { if let Some(header) = item.header() { let mut message = parse_message(format!("{validity}-{uid}"), header, false)?; if !item.flags().iter().any(|f| matches!(f, imap::types::Flag::Seen)) { message.labels.push("UNREAD".into()); } result.push(message); } } }
+    }
+    Ok(result)
+}
+
 pub(super) fn message(account: &MailAccount, id: &str, category: &str) -> Result<MailMessage, String> {
     let (validity, uid) = id.split_once('-').ok_or_else(|| "邮件标识无效".to_string())?;
     let validity: u32 = validity.parse().map_err(|_| "邮件标识无效".to_string())?;
@@ -252,6 +273,15 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
     }
 
+    #[test]
+    fn older_fetch_uses_uid_cursor_without_duplicates() {
+        let header="Subject: older\r\n\r\n";
+        let responses=format!("* OK hello\r\na1 OK logged in\r\n* SEARCH 9 10 11\r\na2 OK searched\r\n* 1 FETCH (UID 9 FLAGS (\\Seen) BODY[HEADER]<0> {{{}}}\r\n{})\r\na3 OK fetched\r\n",header.len(),header);
+        let output=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut client=imap::Client::new(RecordingStream {input:Cursor::new(responses.into_bytes()),output:output.clone()});client.read_greeting().unwrap();let mut session=client.login("synthetic","synthetic").ok().unwrap();
+        let result=older_folder(&mut session,42,10).unwrap();assert_eq!(result.len(),1);assert_eq!(result[0].id,"42-9");assert!(result[0].labels.is_empty());
+        let sent=String::from_utf8(output.lock().unwrap().clone()).unwrap();assert!(sent.contains("UID FETCH 9"));assert!(!sent.contains("UID FETCH 10"));
+    }
     #[test]
     fn sync_fetches_headers_only_for_new_messages_and_refreshes_flags() {
         let header = "From: new@example.com\r\nSubject: New mail\r\n\r\n";

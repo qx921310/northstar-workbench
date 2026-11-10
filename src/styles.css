@@ -318,3 +318,22 @@ html, body, #root { width:100%; height:100%; overflow:hidden; }
 .inbox-fixed.compact .mail-provider-item { padding:2px 8px; }
 .inbox-fixed.compact .mail-provider-item .mail-provider-icon { width:24px; height:24px; border-radius:8px; }
 .inbox-fixed.compact .mail-provider-item .drag-hint { padding:4px; }
+/* Round the scroll viewport itself so clipped list rows follow the same surface. */
+.notes-content,.inbox-content { border-radius:20px; }
+.task-edit-dialog { min-height:480px; }
+.load-older-mail { display:block; margin:18px auto; padding:9px 18px; border:0; border-radius:12px; color:#2866bd; background:#e6f0ff; }
+.night .load-older-mail { color:#d6e8ff; background:#364b66; }
+.compact-reminder > button { border:0; border-radius:10px; padding:8px 12px; background:#e8f1ff; color:#3a679c; }
+.compact-reminder > input { border:1px solid #b8c9df; border-radius:10px; padding:8px; }
+.compact-reminder .reminder-picker { margin-top:8px; }
+.night .compact-reminder > button { background:#364b66; color:#d6e8ff; }
+.notes-content,.inbox-content { margin-left:clamp(20px,3vw,40px); margin-right:clamp(20px,3vw,40px); padding-left:0; padding-right:0; }
+.notes-content { margin-top:18px; padding-top:0; }
+.notes-wrapper { position:relative; display:flex; flex-direction:column; height:100%; min-height:0; }
+.notes-source { position:absolute; z-index:10; top:32px; right:clamp(20px,3vw,40px); display:flex; padding:4px; border-radius:12px; background:#e4edf9; }
+.notes-source button { padding:7px 12px; border:0; border-radius:9px; color:#617796; background:transparent; }
+.notes-source button[aria-selected=true] { background:#fff; color:#2367bf; }
+.notes-wrapper > .notes-module { flex:1; min-height:0; width:100%; max-width:none; display:flex; flex-direction:column; overflow:hidden; padding:0; background:transparent; box-shadow:none; border:0; }
+.local-note-bar { display:flex; align-items:center; gap:8px; }.local-note-bar .back { margin:0 auto 0 0; }.local-note-bar > button:not(.back):not(.primary) { border:0; border-radius:10px; padding:9px 14px; color:#2866bd; background:#e6f0ff; }
+.local-note-editor { display:grid; gap:12px; min-height:400px; }.local-note-editor input,.local-note-editor textarea { width:100%; padding:14px; border:1px solid #d7e1ef; border-radius:14px; background:#fff; color:#263650; font:inherit; }.local-note-editor textarea { min-height:340px; resize:vertical; }
+.night .notes-source { background:#293545; }.night .notes-source button { color:#c1ccdc; }.night .notes-source button[aria-selected=true] { background:#3b4d65; color:#dceafe; }.night .local-note-editor input,.night .local-note-editor textarea { background:#303946; color:#f1f4f8; border-color:#657489; }

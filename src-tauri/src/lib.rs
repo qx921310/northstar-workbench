@@ -1,3 +1,4 @@
+mod local_notes;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
@@ -1444,6 +1445,14 @@ fn cancel_gmail_auth() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_github_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|_| "链接无效")?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") || !parsed.username().is_empty() || parsed.password().is_some() { return Err("只允许打开 GitHub 的 HTTPS 链接".into()); }
+    #[cfg(windows)] { hidden_command("rundll32").args(["url.dll,FileProtocolHandler", parsed.as_str()]).spawn().map_err(|_| "无法启动默认浏览器".to_string())?; Ok(()) }
+    #[cfg(not(windows))] { let _ = parsed; Err("当前平台暂不支持打开浏览器".into()) }
+}
+
+#[tauri::command]
 fn open_gmail_app_passwords() -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1510,6 +1519,17 @@ async fn sync_mail_messages(account_id: String, category: String, known_ids: Vec
         let unread = messages.iter().filter(|item| item.labels.iter().any(|label| label == "UNREAD")).map(|item| item.id.clone()).collect();
         Ok(MailSyncResult { order, unread, new_messages: messages })
     }).await.map_err(|_| "同步邮件任务失败".to_string())?
+}
+
+#[tauri::command]
+async fn list_older_mail(account_id: String, category: String, before: String) -> Result<Vec<MailMessage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let category = valid_mail_category(&category)?;
+        let accounts = read_mail_accounts()?;
+        let account = accounts.iter().find(|a| a.id == account_id && a.provider == "gmail" && a.connection_state == "connected").ok_or("邮箱账户不存在或尚未连接")?;
+        if account.auth_type != "app_password" { return Err("Google 授权模式暂不支持加载历史邮件，请使用应用专用密码连接".into()); }
+        imap_mail::older(account, category, &before)
+    }).await.map_err(|_| "读取历史邮件任务失败".to_string())?
 }
 
 #[tauri::command]
@@ -1744,6 +1764,10 @@ pub fn run() {
             set_obsidian_task_completion,
             set_northstar_task_item,
             list_obsidian_notes,
+            local_notes::list_local_notes,
+            local_notes::save_local_note,
+            local_notes::push_local_note,
+            local_notes::delete_local_note,
             read_obsidian_note,
             create_obsidian_note,
             create_obsidian_directory,
@@ -1757,9 +1781,11 @@ pub fn run() {
             connect_gmail,
             imap_mail::connect_gmail_imap,
             cancel_gmail_auth,
+            open_github_url,
             open_gmail_app_passwords,
             list_mail_messages,
             sync_mail_messages,
+            list_older_mail,
             get_mail_message,
             mark_mail_read,
             batch_mail_action,

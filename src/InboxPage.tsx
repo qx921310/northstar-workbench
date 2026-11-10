@@ -9,6 +9,7 @@ const categories: { id: MailCategory; label: string }[] = [
   { id: "unread", label: "未读" }, { id: "read", label: "已读" }, { id: "spam", label: "垃圾邮件" },
 ];
 const sessionSynced = new Set<string>();
+const inflightSync = new Map<string, Promise<MailMessage[]>>();
 // Bodies are cached in memory only; BODY.PEEK keeps prefetch from marking messages read.
 const bodyCache = new Map<string, Promise<MailMessage>>();
 function loadBody(environment: string, account: string, category: MailCategory, id: string) {
@@ -51,19 +52,22 @@ function formatMailDate(value: string, now = new Date()) {
 }
 function reasonText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function mailCacheKey(environment: string, account: string, category: MailCategory) { return `northstar.mail-cache.v1:${environment}:${account}:${category}`; }
+const memoryMailCache = new Map<string, MailMessage[]>();
 function readMailCache(key: string): MailMessage[] | null {
+  if (memoryMailCache.has(key)) return memoryMailCache.get(key)!;
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key) || "null");
-    if (!Array.isArray(value) || value.length > 20) return null;
+    if (!Array.isArray(value) || value.length > 20000) return null;
     return value.filter((item): item is MailMessage => item && typeof item.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(item.id) && typeof item.threadId === "string" && typeof item.from === "string" && typeof item.subject === "string" && typeof item.date === "string" && typeof item.snippet === "string" && Array.isArray(item.labels) && item.labels.every((label: unknown) => typeof label === "string"));
   } catch { return null; }
 }
 function writeMailCache(key: string, messages: MailMessage[]) {
-  try { localStorage.setItem(key, JSON.stringify(messages.slice(0, 20).map(({body: _body, htmlBody: _htmlBody, ...metadata}) => metadata))); } catch { /* continue without persistent cache */ }
+  memoryMailCache.set(key, messages);
+  try { localStorage.setItem(key, JSON.stringify(messages.slice(0, 20000).map(({body: _body, htmlBody: _htmlBody, ...metadata}) => metadata))); } catch { /* continue without persistent cache */ }
 }
 async function syncMessages(accountId: string, category: MailCategory, cached: MailMessage[]): Promise<MailMessage[]> {
   try {
-    const result = await desktopApi.syncMailMessages(accountId, category, cached.map(item => item.id));
+    const result = await desktopApi.syncMailMessages(accountId, category, cached.slice(0, 20).map(item => item.id));
     const all = new Map([...cached, ...result.newMessages].map(item => [item.id, item]));
     const unread = new Set(result.unread);
     return result.order.flatMap(id => { const item = all.get(id); if (!item) return []; return [{ ...item, labels: [...item.labels.filter(label => label !== "UNREAD"), ...(unread.has(id) ? ["UNREAD"] : [])] }]; });
@@ -87,7 +91,7 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
   const [busy, setBusy] = useState(false); const [cancelling, setCancelling] = useState(false);
   const [messages, setMessages] = useState<MailMessage[]>([]); const [message, setMessage] = useState<MailMessage | null>(null);
   const [loading, setLoading] = useState(false); const [error, setError] = useState("");
-  const [hasCache, setHasCache] = useState(false);
+  const [hasCache, setHasCache] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false); const [noOlder, setNoOlder] = useState(false);
   const [notice, setNotice] = useState("");
   const [compact, setCompact] = useState(false); const [accountMenu, setAccountMenu] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set()); const [batchBusy, setBatchBusy] = useState(false);
@@ -111,14 +115,16 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
   useEffect(() => {
     if (!accountId || !desktop) { setMessages([]); setHasCache(false); setLoading(false); return; }
     const request = ++generation.current;
-    setSelected(new Set());
+    setSelected(new Set()); setNoOlder(false);
     const source = sourceCategory(category);
     const key = mailCacheKey(desktop.environment, accountId, source);
     const saved = readMailCache(key); const cached = saved ?? [];
     setError(""); setHasCache(saved !== null); setMessages(filterMail(cached, category)); setMessage(null);
     if (sessionSynced.has(key) && saved !== null) { setLoading(false); return; }
     setLoading(true);
-    void syncMessages(accountId, source, cached).then(items => { if (request === generation.current) { sessionSynced.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } })
+    let pending = inflightSync.get(key);
+    if (!pending) { pending = syncMessages(accountId, source, cached); inflightSync.set(key, pending); void pending.finally(() => { if (inflightSync.get(key) === pending) inflightSync.delete(key); }).catch(() => undefined); }
+    void pending.then(items => { if (request === generation.current) { sessionSynced.add(key); setMessages(filterMail(items, category)); setHasCache(true); writeMailCache(key, items); } })
       .catch(reason => { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); })
       .finally(() => { if (request === generation.current) setLoading(false); });
     return () => { generation.current++; };
@@ -127,7 +133,7 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
   useEffect(() => {
     if (!desktop || !accountId || !messages.length || loading) return;
     let active = true; let index = 0;
-    const work = async () => { while (active && index < messages.length) { const item = messages[index++]; try { await loadBody(desktop.environment, accountId, category, item.id); } catch { /* Opening can retry. */ } } };
+    const work = async () => { while (active && index < Math.min(messages.length, 20)) { const item = messages[index++]; try { await loadBody(desktop.environment, accountId, category, item.id); } catch { /* Opening can retry. */ } } };
     void work(); void work();
     return () => { active = false; };
   }, [desktop, accountId, category, messages, loading]);
@@ -147,6 +153,14 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
     catch (reason) { if (request === generation.current) setError(`${saved !== null ? "同步失败，正在显示本机缓存：" : "同步失败："}${reasonText(reason)}`); }
     finally { if (request === generation.current) setLoading(false); }
   };
+  const loadOlder = async () => {
+    if (!desktop || !accountId || loadingOlder) return;
+    const source = sourceCategory(category); const key = mailCacheKey(desktop.environment, accountId, source); const cached = readMailCache(key) || [];
+    const last = cached[cached.length - 1]; if (!last) { setNoOlder(true); return; }
+    const requestedAccount = accountId; const request = generation.current; setLoadingOlder(true); setError("");
+    try { const older = await desktopApi.listOlderMail(accountId, source, last.id); if (request !== generation.current) return; const latest = readMailCache(key) || []; const seen = new Set(latest.map(m => m.id)); const merged = [...latest, ...older.filter(m => !seen.has(m.id))]; writeMailCache(key, merged); if (visible.current.accountId === requestedAccount && sourceCategory(visible.current.category) === source) setMessages(filterMail(merged, visible.current.category)); setNoOlder(older.length < 50); }
+    catch (reason) { setError(`读取历史邮件失败：${reasonText(reason)}`); } finally { setLoadingOlder(false); }
+  };
   const openMessage = async (item: MailMessage) => {
     const request = ++generation.current; setLoading(true); setError("");
     try {
@@ -162,7 +176,7 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
           const current = readMailCache(key);
           if (current) writeMailCache(key, current.map(mail => mail.id === item.id ? { ...mail, labels: mail.labels.filter(label => label !== "UNREAD") } : mail));
           // IMAP UIDs differ across folders; refresh those snapshots on next visit.
-          for (const folder of ["all", "inbox", "spam"] as const) if (folder !== source) { const other = mailCacheKey(env, accountId, folder); sessionSynced.delete(other); try { localStorage.removeItem(other); } catch { /* no persistent cache */ } }
+          for (const folder of ["all", "inbox", "spam"] as const) if (folder !== source) { const other = mailCacheKey(env, accountId, folder); sessionSynced.delete(other); memoryMailCache.delete(other); try { localStorage.removeItem(other); } catch { /* no persistent cache */ } }
           if (request === generation.current) setMessages(current => filterMail(current.map(mail => mail.id === item.id ? { ...mail, labels: mail.labels.filter(label => label !== "UNREAD") } : mail), category));
         } catch (reason) { if (request === generation.current) setError(`正文已打开，但未能同步已读状态：${reasonText(reason)}`); }
       }
@@ -173,7 +187,8 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
     if (!accountId || !selected.size || batchBusy) return;
     const ids = [...selected]; const request = ++generation.current; setBatchBusy(true); setError("");
     try {
-      const result = await desktopApi.batchMailAction(accountId, ids, category, action);
+      const result: {succeeded:string[];failed:{id:string;error:string}[]} = {succeeded:[], failed:[]};
+      for (let i=0; i<ids.length; i+=20) { const chunk=ids.slice(i,i+20); try { const part=await desktopApi.batchMailAction(accountId, chunk, category, action); result.succeeded.push(...part.succeeded); result.failed.push(...part.failed); } catch (reason) { result.failed.push(...chunk.map(id => ({id, error:reasonText(reason)}))); } }
       const done = new Set(result.succeeded); const env = desktop?.environment || "production";
       const source = sourceCategory(category); const key = mailCacheKey(env, accountId, source);
       const update = (items: MailMessage[]) => action === "read" ? items.map(item => done.has(item.id) ? {...item, labels: item.labels.filter(label => label !== "UNREAD")} : item) : items.filter(item => !done.has(item.id));
@@ -181,7 +196,7 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
       if (visible.current.accountId === accountId && sourceCategory(visible.current.category) === source) setMessages(items => filterMail(update(items), visible.current.category));
       if (request === generation.current) setSelected(current => new Set([...current].filter(id => !done.has(id))));
       if (done.size) {
-        for (const folder of ["all", "inbox", "spam"] as const) if (folder !== source) { const other = mailCacheKey(env, accountId, folder); sessionSynced.delete(other); try { localStorage.removeItem(other); } catch { /* no persistent cache */ } }
+        for (const folder of ["all", "inbox", "spam"] as const) if (folder !== source) { const other = mailCacheKey(env, accountId, folder); sessionSynced.delete(other); memoryMailCache.delete(other); try { localStorage.removeItem(other); } catch { /* no persistent cache */ } }
         if (action !== "read") for (const cacheKey of bodyCache.keys()) { try { const parts = JSON.parse(cacheKey); if (parts[0] === env && parts[1] === accountId && done.has(parts[3])) bodyCache.delete(cacheKey); } catch { /* ignore */ } }
       }
       if (request === generation.current) { if (result.failed.length) setError(`已处理 ${result.succeeded.length} 封，${result.failed.length} 封未确认：${result.failed[0].error}。请刷新核对。`); else setNotice(`已处理 ${result.succeeded.length} 封邮件`); }
@@ -226,7 +241,7 @@ export default function InboxPage({ desktop }: { desktop: DesktopContext | null 
         {method === "app_password" ? <div className="gmail-connect"><p>输入 Gmail 地址和应用专用密码，连接后自动同步邮件。</p><div className="mail-fields"><input type="email" value={address} onChange={event => setAddress(event.target.value)} placeholder="Gmail 地址" aria-label="Gmail 地址" /><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="应用专用密码" aria-label="应用专用密码" /><button className="primary" disabled={busy || !address.trim() || !password.trim()} onClick={() => void connect()}>{busy ? "正在连接…" : "连接 Gmail"}</button></div><p>首次使用需要开启 Google 两步验证并生成密码。 <button type="button" className="gmail-help-link" onClick={() => void desktopApi.openGmailAppPasswords().catch(reason => setError(reasonText(reason)))}>打开 Google 设置 ↗</button></p></div> : <div className="gmail-connect">{!setup?.configured ? <><p>填写 Google 桌面客户端 ID。</p><div className="mail-fields"><input className="gmail-client-id" value={clientId} onChange={event => setClientId(event.target.value)} placeholder="123…apps.googleusercontent.com" /><button className="primary" disabled={busy || !clientId.trim()} onClick={() => void saveId()}>保存 Client ID</button></div></> : <><p>已配置 Client ID（{setup.clientIdHint}），授权令牌保存在本机。</p><div className="gmail-secret"><input type="password" autoComplete="off" value={clientSecret} onChange={event => setClientSecret(event.target.value)} aria-label="Google 客户端密钥" placeholder={setup.clientSecretConfigured ? "替换客户端密钥（可选）" : "Google 客户端密钥"} /><button disabled={busy || !clientSecret.trim()} onClick={() => void saveSecret()}>保存密钥</button></div><div className="gmail-actions"><button className="primary" disabled={busy} onClick={() => void connect()}>{busy ? "等待浏览器授权…" : "连接 Gmail"}</button>{busy && <button disabled={cancelling} onClick={() => { setCancelling(true); void desktopApi.cancelGmailAuth().catch(reason => { setError(reasonText(reason)); setCancelling(false); }); }}>取消授权</button>}</div></>}</div>}
         <p className="setup-note">凭据保存在 Windows 凭据管理器；阅读邮件会同步已读状态。</p></section>}
       {error && <p role="alert" className="inline-error">{error}</p>}
-      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {formatMailDate(message.date)}</p>{message.htmlBody ? <div className="message-html" dangerouslySetInnerHTML={{ __html: message.htmlBody.replaceAll(" data-remote-src=", " src=") }} /> : <pre>{message.body || message.snippet || "此邮件没有可显示的正文。"}</pre>}</article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>{category === "read" || category === "unread" ? "筛选最近 20 封全部邮件" : "显示最近 20 封"}</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p></div> : <><div className="mail-batch-toolbar"><label><input type="checkbox" aria-label="全选当前邮件" checked={messages.length > 0 && messages.every(item => selected.has(item.id))} onChange={event => setSelected(event.target.checked ? new Set(messages.map(item => item.id)) : new Set())} />全选</label><span>{selected.size ? `已选 ${selected.size} 封` : "选择邮件进行批量操作"}</span><button disabled={!selected.size || batchBusy} onClick={() => void batchAction("read")}>{batchBusy ? "正在处理…" : "标为已读"}</button><button disabled={!selected.size || batchBusy} onClick={() => void batchAction("trash")}>删除</button><button disabled={!selected.size || batchBusy || category === "spam"} onClick={() => void batchAction("spam")}>标记垃圾邮件</button></div><div className="message-list">{messages.map(item => <div className="mail-select-row" key={item.id}><input type="checkbox" aria-label={`选择邮件 ${item.subject || "无主题"}`} checked={selected.has(item.id)} disabled={batchBusy} onChange={event => setSelected(current => { const next = new Set(current); if (event.target.checked) next.add(item.id); else next.delete(item.id); return next; })}/><button onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small title={item.date}>{formatMailDate(item.date)}</small></button></div>)}</div></>}</>}</section>}
+      {connected.length > 0 && <section className="mail-reader">{message ? <article className="message-detail"><h2>{message.subject || "（无主题）"}</h2><p className="message-meta">{message.from} · {formatMailDate(message.date)}</p>{message.htmlBody ? <div className="message-html" dangerouslySetInnerHTML={{ __html: message.htmlBody.replaceAll(" data-remote-src=", " src=") }} /> : <pre>{message.body || message.snippet || "此邮件没有可显示的正文。"}</pre>}</article> : <><div className="mail-list-heading"><b>{categories.find(item => item.id === category)?.label}</b><span>{category === "read" || category === "unread" ? "按已加载邮件筛选" : "按需加载历史邮件"}</span></div>{loading && !hasCache ? <div className="mail-placeholder"><p>正在同步邮件…</p></div> : messages.length === 0 ? <div className="mail-placeholder"><div className="mail-empty-icon">✉</div><b>这里暂时没有邮件</b><p>试试其他分类，或刷新列表。</p>{!noOlder && hasCache && <button className="load-older-mail" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "加载中…" : "加载更早邮件"}</button>}</div> : <><div className="mail-batch-toolbar"><label><input type="checkbox" aria-label="全选当前邮件" checked={messages.length > 0 && messages.every(item => selected.has(item.id))} onChange={event => setSelected(event.target.checked ? new Set(messages.map(item => item.id)) : new Set())} />全选</label><span>{selected.size ? `已选 ${selected.size} 封` : "选择邮件进行批量操作"}</span><button disabled={!selected.size || batchBusy} onClick={() => void batchAction("read")}>{batchBusy ? "正在处理…" : "标为已读"}</button><button disabled={!selected.size || batchBusy} onClick={() => void batchAction("trash")}>删除</button><button disabled={!selected.size || batchBusy || category === "spam"} onClick={() => void batchAction("spam")}>标记垃圾邮件</button></div><div className="message-list">{messages.map(item => <div className="mail-select-row" key={item.id}><input type="checkbox" aria-label={`选择邮件 ${item.subject || "无主题"}`} checked={selected.has(item.id)} disabled={batchBusy} onChange={event => setSelected(current => { const next = new Set(current); if (event.target.checked) next.add(item.id); else next.delete(item.id); return next; })}/><button onClick={() => void openMessage(item)}><span className={item.labels.includes("UNREAD") ? "mail-unread-dot" : "mail-read-dot"} aria-label={item.labels.includes("UNREAD") ? "未读" : "已读"}></span><div><b>{item.subject || "（无主题）"}</b><span>{item.from}</span>{item.snippet && <p>{item.snippet}</p>}</div><small title={item.date}>{formatMailDate(item.date)}</small></button></div>)}</div>{!noOlder && <button className="load-older-mail" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "加载中…" : "加载更早邮件"}</button>}</>}</>}</section>}
     </>}
     </div>
   </section>;
