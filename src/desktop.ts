@@ -6,7 +6,7 @@ export type DesktopContext = {
 };
 
 export type ObsidianTask = { id: string; title: string; details: string; itemStates?: boolean[]; raw: string; completed: boolean; reminderAt?: string; file: string; line: number };
-export type LocalNote = { id:string; title:string; body:string; revision:number; pushedBody:string | null; targetName?:string | null };
+export type LocalNote = { id:string; title:string; body:string; revision:number; pushedBody:string | null; targetName?:string | null; folder?:string };
 export type ObsidianNote = { file: string; title: string; preview: string };
 export type ServiceStatus = {
   id: string; name: string; description: string; reachable: boolean; latencyMs?: number;
@@ -56,8 +56,10 @@ export const desktopApi = {
   createTask: (title: string, details: string, reminderAt?: string) => invoke<ObsidianTask>("create_obsidian_task", { title, details, reminderAt }),
   changeTask: (task: ObsidianTask, title?: string, details?: string, reminderAt?: string) => invoke<void>("change_northstar_task", { line: task.line, expected: task.raw, title, details, reminderAt }),
   setTaskCompletion: (file: string, line: number, completed: boolean) => invoke<void>("set_obsidian_task_completion", { file, line, completed }),
+  listLocalFolders: () => invoke<string[]>("list_local_folders"),
+  createLocalFolder: (name:string) => invoke<string[]>("create_local_folder", {name}),
   listLocalNotes: () => invoke<LocalNote[]>("list_local_notes"),
-  saveLocalNote: (id:string | null, title:string, body:string, expectedRevision:number | null) => invoke<LocalNote>("save_local_note", {id, title, body, expectedRevision}),
+  saveLocalNote: (id:string | null, title:string, body:string, expectedRevision:number | null, folder?:string) => invoke<LocalNote>("save_local_note", {id, title, body, expectedRevision, folder}),
   deleteLocalNote: (id:string, expectedRevision:number) => invoke<void>("delete_local_note", {id, expectedRevision}),
   pushLocalNote: (id:string, expectedRevision:number) => invoke<LocalNote>("push_local_note", {id, expectedRevision}),
   listNotes: (query: string) => readOnce<ObsidianNote[]>("list_obsidian_notes", { query }),

@@ -8,7 +8,7 @@ const { chromium } = require('playwright'); const assert = require('node:assert/
   window.__calls.push([cmd,args]);
   if(cmd==='get_desktop_context')return {environment:'development',vaultPath:'test',taskDirectory:'test',agents:[]};
   if(cmd==='get_sidebar_counts')return {openTasks:0,unreadMail:0};
-  if(cmd==='list_services')return [];
+  if(cmd==='list_services')return [];if(cmd==='list_local_folders')return [];
   if(cmd==='list_obsidian_tasks')return window.__tasks;
   if(cmd==='create_obsidian_task'){window.__tasks=[{id:'a',title:args.title,details:args.details,raw:'line',completed:false,file:'待办事项/Northstar.md',line:0}];return window.__tasks[0]}
   if(cmd==='list_mail_accounts')return [{id:'mock',provider:'gmail',address:'test@example.invalid',label:'test',authType:'app_password',connectionState:'connected'}];

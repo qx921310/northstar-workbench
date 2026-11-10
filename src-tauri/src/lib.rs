@@ -487,14 +487,17 @@ fn gmail_header(value: &serde_json::Value, name: &str) -> String {
 fn sanitize_mail_html(html: &str) -> Option<String> { sanitize_mail_html_with_inline(html, Default::default()) }
 fn sanitize_mail_html_with_inline(html: &str, inline: std::collections::HashMap<String, String>) -> Option<String> {
     let tags = ["p", "div", "span", "b", "strong", "em", "i", "u", "s", "br", "hr", "ul", "ol", "li", "blockquote", "pre", "code", "table", "tbody", "thead", "tfoot", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "img"].into_iter().collect();
-    let mut attrs = std::collections::HashMap::new(); attrs.insert("img", ["src", "alt"].into_iter().collect());
-    let cleaned = ammonia::Builder::default().tags(tags).generic_attributes(Default::default()).tag_attributes(attrs).url_schemes(["https", "data", "cid"].into_iter().collect()).url_relative(ammonia::UrlRelative::Deny).link_rel(None)
+    let mut attrs = std::collections::HashMap::new(); attrs.insert("img", ["src", "data-src", "alt"].into_iter().collect());
+    let cleaned = ammonia::Builder::default().tags(tags).generic_attributes(Default::default()).tag_attributes(attrs).url_schemes(["https", "data", "cid"].into_iter().collect()).url_relative(ammonia::UrlRelative::PassThrough).link_rel(None)
         .attribute_filter(move |element, attribute, value| {
-            if element == "img" && attribute == "src" {
+            if element == "img" && (attribute == "src" || attribute == "data-src") {
                 if let Some(cid) = value.strip_prefix("cid:") { return inline.get(&cid.trim_matches(['<', '>']).to_ascii_lowercase()).cloned().map(std::borrow::Cow::Owned); }
-                let url = url::Url::parse(value).ok()?;
+                let candidate=if value.starts_with("//") {format!("https:{value}")} else {value.to_string()};
+                let mut url=url::Url::parse(&candidate).ok()?;
+                if url.scheme()=="http" {url.set_scheme("https").ok()?;}
                 let host = match url.host()? { url::Host::Domain(host) => host.to_ascii_lowercase(), _ => return None };
                 if url.scheme() != "https" || host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || !url.username().is_empty() || url.password().is_some() { return None; }
+                return Some(std::borrow::Cow::Owned(url.to_string()));
             }
             Some(std::borrow::Cow::Borrowed(value))
         }).clean(html).to_string();
@@ -1765,6 +1768,8 @@ pub fn run() {
             set_northstar_task_item,
             list_obsidian_notes,
             local_notes::list_local_notes,
+            local_notes::list_local_folders,
+            local_notes::create_local_folder,
             local_notes::save_local_note,
             local_notes::push_local_note,
             local_notes::delete_local_note,
@@ -2060,6 +2065,11 @@ mod tests {
 #[cfg(test)]
 mod html_mail_regression_tests {
     use super::*;
+    #[test]
+    fn mail_images_accept_safe_lazy_and_protocol_relative_urls_only() {
+        let html=r#"<img src="//cdn.example.com/a.png"><img data-src="http://images.example.com/b.png"><img src="http://127.0.0.1/private"><img data-src="javascript:alert(1)">"#;
+        let out=sanitize_mail_html(html).unwrap();assert!(out.contains("https://cdn.example.com/a.png"),"{out}");assert!(out.contains("https://images.example.com/b.png"),"{out}");assert!(!out.contains("127.0.0.1"));assert!(!out.contains("javascript:"));
+    }
     #[test]
     fn html_only_mail_is_displayable_and_inert() {
         let encoded = URL_SAFE_NO_PAD.encode("<h2>优惠邮件</h2><p onclick='evil()'>欢迎</p><img src='https://tracker.invalid/pixel'><script>alert(1)</script><a href='https://example.invalid'>链接</a><style>body{display:none}</style>");
