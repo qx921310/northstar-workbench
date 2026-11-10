@@ -18,6 +18,10 @@ if (Test-Path -LiteralPath $bundle) { throw "更新包已存在：$bundle；请�
 $stage = Join-Path $output ("stage-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item -Path (Join-Path $root 'dist/*') -Destination $stage -Recurse
+# The desktop icon source is only used by the icon generator. The installed
+# updater accepts index.html and assets/ only, so do not include this file.
+$iconSource = Join-Path $stage 'northstar-mark.svg'
+if (Test-Path -LiteralPath $iconSource) { Remove-Item -LiteralPath $iconSource }
 $parts = $shellVersion.Split('.') | ForEach-Object { [int]$_ }
 $appVersion = "{0}.{1}.{2}" -f $parts[0], $parts[1], ($parts[2] + $Revision)
 $commit = (git rev-parse HEAD).Trim()
