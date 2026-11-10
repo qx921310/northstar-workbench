@@ -11,7 +11,7 @@
     "desktop:build": "tauri build",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:ui": "node tests/ui-regression.cjs && node tests/feature-regression.cjs && node tests/version-regression.cjs && node tests/tasks-regression.cjs && node tests/experience-regression.cjs && node tests/local-notes-regression.cjs && node tests/mail-paging-regression.cjs && node tests/ui-behavior-regression.cjs && node tests/design-system-regression.cjs"
+    "test:ui": "node tests/ui-regression.cjs && node tests/feature-regression.cjs && node tests/version-regression.cjs && node tests/tasks-regression.cjs && node tests/experience-regression.cjs && node tests/local-notes-regression.cjs && node tests/mail-paging-regression.cjs && node tests/ui-behavior-regression.cjs && node tests/design-system-regression.cjs && node tests/scroll-regression.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "latest",

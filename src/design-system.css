@@ -118,6 +118,15 @@
   border-radius: var(--ns-radius-control);
 }
 
+/* Keep mail navigation and message rows within the viewport without an outer horizontal scrollbar. */
+.inbox-redesign .mail-category-bar { overflow: visible; flex-wrap: wrap; }
+.inbox-redesign .inbox-content { overflow-x: hidden; }
+.inbox-redesign .mail-reader, .inbox-redesign .message-detail, .inbox-redesign .message-html { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.inbox-redesign .message-html :where(table, img) { max-width: 100%; }
+
+/* The compact header increases the scroll viewport; reserve its height difference so the browser does not clamp scrollTop back across the collapse threshold. */
+.services-fixed.compact + .services-content { padding-bottom: 123px; }
+
 /* The native window controls sit on the same background as the workspace. */
 .window-drag-region { position: fixed; z-index: 110; top: 5px; left: 6px; right: 350px; height: 34px; -webkit-app-region: drag; }
 .window-controls { position: fixed; z-index: 120; top: 4px; right: 7px; display: flex; gap: 2px; }
