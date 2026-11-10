@@ -1,0 +1,130 @@
+/* Northstar semantic design tokens: both themes share the same component rules. */
+:root, .app-shell {
+  --ns-ink: #202a38;
+  --ns-muted: #52627a;
+  --ns-surface: #f8fafd;
+  --ns-surface-soft: #e7effb;
+  --ns-outline: #d6e0ed;
+  --ns-accent: #256bd8;
+  --ns-icon-bg: #e7efff;
+  --ns-icon-ink: #3478ed;
+  --ns-shadow: 0 12px 30px rgba(54, 78, 116, .10);
+  --ns-radius-card: 20px;
+  --ns-radius-control: 12px;
+  color: var(--ns-ink);
+}
+.night {
+  --ns-ink: #e7edf5;
+  --ns-muted: #c0ccdc;
+  --ns-surface: #273548;
+  --ns-surface-soft: #34465d;
+  --ns-outline: #52647a;
+  --ns-accent: #a6cdff;
+  --ns-icon-bg: #34465d;
+  --ns-icon-ink: #a6cdff;
+  --ns-shadow: 0 12px 30px rgba(0, 0, 0, .18);
+}
+.space-card, .night .space-card {
+  color: var(--ns-ink);
+  background: var(--ns-surface);
+  border-radius: var(--ns-radius-card);
+  box-shadow: var(--ns-shadow);
+}
+.space-card i, .night .space-card i, .dock-icon, .night .dock-icon {
+  display: grid;
+  place-items: center;
+  color: var(--ns-icon-ink);
+  background: var(--ns-icon-bg);
+}
+.space-card i svg, .dock-icon svg { width: 21px; height: 21px; }
+.theme-toggle svg, .mail-refresh-icon svg, .mail-back svg, .task-reminder-badge svg { width: 17px; height: 17px; }
+.mail-provider-icon svg, .mail-empty-icon svg { width: 20px; height: 20px; }
+.task-reminder-badge { color: var(--ns-accent); }
+.space-card span, .night .space-card span { color: var(--ns-muted); }
+.space-card em, .night .space-card em { color: var(--ns-accent); }
+.sidebar nav button.active .dock-icon, .night .sidebar nav button.active .dock-icon {
+  background: #5b8fe3;
+  box-shadow: none;
+}
+.sidebar nav button .dock-icon svg { opacity: 0; }
+.sidebar nav button:hover .dock-icon svg, .sidebar nav button:focus-visible .dock-icon svg { opacity: 1; }
+.sidebar nav button:hover .dock-icon, .sidebar nav button:focus-visible .dock-icon,
+.sidebar nav button.active:hover .dock-icon, .sidebar nav button.active:focus-visible .dock-icon,
+.night .sidebar nav button:hover .dock-icon, .night .sidebar nav button:focus-visible .dock-icon,
+.night .sidebar nav button.active:hover .dock-icon, .night .sidebar nav button.active:focus-visible .dock-icon {
+  color: var(--ns-icon-ink);
+  background: var(--ns-icon-bg);
+}
+@media (hover: none) { .sidebar nav button .dock-icon svg { opacity: 1; }.sidebar nav button .dock-icon, .sidebar nav button.active .dock-icon { color: var(--ns-icon-ink); background: var(--ns-icon-bg); } }
+.task-group, .repository-list, .message-list, .note-list, .mail-reader, .task-edit-dialog, .task-confirm-dialog {
+  border-radius: var(--ns-radius-card);
+}
+.app-shell :where(input:not([type=checkbox]), textarea, select),
+.app-shell :where(.primary, .refresh, .back) { border-radius: var(--ns-radius-control); }
+.app-shell :where(button, input, textarea, select):focus-visible { outline: 2px solid #3986f6; outline-offset: 2px; }
+.night :where(button, input, textarea, select):focus-visible { outline-color: #a6cdff; }
+.app-shell :where(input, textarea)::placeholder { color: #66758a; opacity: 1; }
+.app-shell.night :where(input, textarea)::placeholder { color: #adbbce; opacity: 1; }
+.night .reminder-popover-actions button:first-child { color: var(--ns-ink); background: var(--ns-surface-soft); }
+.mail-provider-icon, .mail-provider-icon.gmail, .mail-provider-icon.qq, .mail-provider-icon.imap,
+.agent-tab-icon, .mail-empty-icon, .night .mail-empty-icon {
+  color: var(--ns-icon-ink);
+  background: var(--ns-icon-bg);
+  border-radius: var(--ns-radius-control);
+}
+.mail-provider-tabs, .notes-source, .night .mail-provider-tabs, .night .notes-source {
+  background: var(--ns-surface-soft);
+  border-radius: var(--ns-radius-card);
+}
+.mail-provider-item.active, .night .mail-provider-item.active,
+.notes-source button[aria-selected=true], .night .notes-source button[aria-selected=true] {
+  color: var(--ns-accent);
+  background: var(--ns-surface);
+  border-radius: var(--ns-radius-control);
+}
+.task-edit-dialog, .task-confirm-dialog, .reminder-panel, .reminder-popover,
+.night .task-edit-dialog, .night .task-confirm-dialog, .night .reminder-panel, .night .reminder-popover {
+  color: var(--ns-ink);
+  background: var(--ns-surface);
+  border-color: var(--ns-outline);
+  border-radius: var(--ns-radius-card);
+  box-shadow: var(--ns-shadow);
+}
+.message-list, .repository-list, .notes-results, .service-card, .night .message-list, .night .repository-list, .night .service-card {
+  overflow: hidden;
+  border-radius: var(--ns-radius-card);
+}
+.app-shell .tasks-board .task-group,
+.app-shell .service-setup, .app-shell .service-card,
+.app-shell .agent-conversation, .app-shell .agent-preview,
+.app-shell .message-detail, .app-shell .note-detail, .app-shell .mail-setup {
+  color: var(--ns-ink);
+  background: var(--ns-surface);
+  border-color: var(--ns-outline);
+  border-radius: var(--ns-radius-card);
+  box-shadow: var(--ns-shadow);
+}
+.app-shell .repository-list, .app-shell .message-list, .app-shell .note-list {
+  color: var(--ns-ink);
+  background: var(--ns-surface);
+  box-shadow: var(--ns-shadow);
+}
+.app-shell .task-form :where(input:not([type=checkbox]), textarea, select),
+.app-shell .notes-controls input, .app-shell .local-note-editor :where(input, textarea, select),
+.app-shell .mail-fields input, .app-shell .service-fields input {
+  color: var(--ns-ink);
+  background: var(--ns-surface);
+  border-color: var(--ns-outline);
+  border-radius: var(--ns-radius-control);
+}
+
+/* The native window controls sit on the same background as the workspace. */
+.window-drag-region { position: fixed; z-index: 110; top: 5px; left: 6px; right: 350px; height: 34px; }
+.window-controls { position: fixed; z-index: 120; top: 4px; right: 7px; display: flex; gap: 2px; }
+.window-controls button { display: grid; width: 36px; height: 32px; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--ns-muted); background: transparent; }
+.window-controls button:hover { color: var(--ns-ink); background: var(--ns-surface-soft); }
+.window-controls .window-close:hover { color: white; background: #c94050; }
+.window-controls svg { width: 15px; height: 15px; }
+.desktop-shell .version-indicator { right: 128px; }
+@media (max-width: 720px) { .window-drag-region { right: 280px; }.desktop-shell .version-indicator { right: 122px; } }
+@media (prefers-reduced-motion: reduce) { .space-card { transition: none; }.space-card:hover, .space-card:focus-visible { transform: none; } }

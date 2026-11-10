@@ -1,6 +1,6 @@
 {
   "productName": "Northstar Workbench Dev",
   "identifier": "com.xu3ji.northstar-workbench.dev",
-  "app": { "windows": [{ "title": "北极星 · 开发版" }] },
+  "app": { "windows": [{ "title": "北极星 · 开发版", "decorations": false, "visible": false, "width": 1100, "height": 730, "minWidth": 680, "minHeight": 500 }] },
   "bundle": { "createUpdaterArtifacts": false }
 }

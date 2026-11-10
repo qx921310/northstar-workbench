@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import InboxPage from "./InboxPage";
+import { DesignIcon } from "./DesignIcon";
 import { desktopApi, getDesktopContext, type CustomService, type DesktopContext, type LocalNote, type ObsidianNote, type ObsidianTask, type ServiceStatus, type SidebarCounts } from "./desktop";
 import { version as browserVersion } from "../package.json";
 import type { Update } from "@tauri-apps/plugin-updater";
@@ -114,13 +115,30 @@ export default function App() {
   useEffect(() => { if (desktop) void desktopApi.getSidebarCounts().then(setSidebarCounts).catch(() => setSidebarCounts(null)); }, [desktop]);
   const badgeFor = (id: Page) => id === "inbox" ? sidebarCounts?.unreadMail : undefined;
 
-  return <div className={`app-shell ${night ? "night" : ""}`} onContextMenu={event => event.preventDefault()}>
+  const isDesktopWindow = "__TAURI_INTERNALS__" in window;
+  return <div className={`app-shell ${night ? "night" : ""} ${isDesktopWindow ? "desktop-shell" : ""}`} onContextMenu={event => event.preventDefault()}>
+    {isDesktopWindow && <WindowChrome />}
     {desktop?.environment === "development" && <div className="development-marker"><strong className="dev-label">开发版 · 测试数据</strong></div>}
     <div className="workspace">
-      <aside className="sidebar"><nav aria-label="主导航">{nav.map(item => { const badge = badgeFor(item.id); const icons: Record<Page, string> = { home: "⌂", tasks: "✓", trending: "⌁", agents: "✦", notes: "▤", inbox: "✉", services: "◎" }; return <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><span className="dock-icon" aria-hidden="true">{icons[item.id]}</span><span className="dock-label">{item.label}</span>{badge !== undefined && badge > 0 && <small className="nav-badge">{badge > 99 ? "99+" : badge}</small>}</button>; })}</nav></aside>
+      <aside className="sidebar"><nav aria-label="主导航">{nav.map(item => { const badge = badgeFor(item.id); return <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><span className="dock-icon" aria-hidden="true"><DesignIcon name={item.id}/></span><span className="dock-label">{item.label}</span>{badge !== undefined && badge > 0 && <small className="nav-badge">{badge > 99 ? "99+" : badge}</small>}</button>; })}</nav></aside>
       <main>{page === "home" ? <Home clock={clock} onNavigate={setPage} desktop={desktop} unreadMail={sidebarCounts?.unreadMail} /> : page === "trending" ? <TrendingPage /> : page === "tasks" ? <TasksPage desktop={desktop} /> : page === "notes" ? <NotesPage desktop={desktop} /> : page === "inbox" ? <InboxPage desktop={desktop} /> : page === "services" ? <ServicesPage desktop={desktop} /> : <PageContent desktop={desktop} />}</main>
-    </div><div className="version-indicator">{desktop && <ReminderCenter desktop={desktop} onOpenTasks={() => setPage("tasks")} />}<button className="theme-toggle" onClick={() => setNight(current => { const next = !current; try { localStorage.setItem("northstar.theme", next ? "night" : "day"); } catch { /* retain this session's preference */ } return next; })} aria-label={night ? "切换日间模式" : "切换夜间模式"} title={night ? "切换日间模式" : "切换夜间模式"}>{night ? "☀" : "☾"}</button><span>V{version}</span>{(update || uiUpdate) && <button disabled={updateState.startsWith("正在")} onClick={() => void installUpdate()} aria-label={update ? `更新至版本 ${update.version}` : `应用界面更新 ${uiUpdate?.revision}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>
+    </div><div className="version-indicator">{desktop && <ReminderCenter desktop={desktop} onOpenTasks={() => setPage("tasks")} />}<button className="theme-toggle" onClick={() => setNight(current => { const next = !current; try { localStorage.setItem("northstar.theme", next ? "night" : "day"); } catch { /* retain this session's preference */ } return next; })} aria-label={night ? "切换日间模式" : "切换夜间模式"} title={night ? "切换日间模式" : "切换夜间模式"}><DesignIcon name={night ? "sun" : "moon"}/></button><span>V{version}</span>{(update || uiUpdate) && <button disabled={updateState.startsWith("正在")} onClick={() => void installUpdate()} aria-label={update ? `更新至版本 ${update.version}` : `应用界面更新 ${uiUpdate?.revision}`}>⬆️</button>}{updateState && <small role="status">{updateState}</small>}</div>
   </div>;
+}
+
+function WindowChrome() {
+  const run = async (action: "minimize" | "toggleMaximize" | "close") => {
+    try { const { getCurrentWindow } = await import("@tauri-apps/api/window"); await getCurrentWindow()[action](); }
+    catch (error) { console.error("窗口操作失败", error); }
+  };
+  return <>
+    <div className="window-drag-region" data-tauri-drag-region />
+    <div className="window-controls" role="group" aria-label="窗口操作">
+      <button type="button" aria-label="最小化窗口" title="最小化" onClick={() => void run("minimize")}><DesignIcon name="minimize" /></button>
+      <button type="button" aria-label="最大化或还原窗口" title="最大化或还原" onClick={() => void run("toggleMaximize")}><DesignIcon name="maximize" /></button>
+      <button type="button" className="window-close" aria-label="关闭窗口" title="关闭" onClick={() => void run("close")}><DesignIcon name="close" /></button>
+    </div>
+  </>;
 }
 
 function ReminderCenter({ desktop, onOpenTasks }: { desktop: DesktopContext; onOpenTasks: () => void }) {
@@ -157,7 +175,7 @@ function Home({ clock, onNavigate, desktop, unreadMail }: { clock: number; onNav
   }, [desktop]);
   const hasAlert = serviceAlert !== null;
   const greeting = currentGreeting(clock, hasAlert);
-  return <section className="home"><div className="home-composition"><div className="home-intro"><h1>{greeting.title}</h1></div><div className="home-stack"><button className="space-card" onClick={() => onNavigate("trending")}><i>⌁</i><b>今日热点</b><span>看看开发者们正在关注什么</span><em>查看热点 →</em></button><button className="space-card" onClick={() => onNavigate("tasks")}><i>✓</i><b>我的待办</b><span>{pending === null ? (desktop ? "正在读取待办…" : "桌面版可读取待办") : pending ? `${pending} 项待办${todayReminders ? ` · ${todayReminders} 项今天提醒` : ""}` : "暂无待办"}</span><em>打开待办 →</em></button><button className="space-card" onClick={() => onNavigate("inbox")}><i>✉</i><b>收件箱</b><span>{!desktop ? "桌面版可查看邮件" : unreadMail === undefined ? "正在读取邮件状态…" : unreadMail > 0 ? `${unreadMail} 封未读邮件` : "查看你的邮件"}</span><em>打开收件箱 →</em></button><button className={`space-card${hasAlert ? " alert" : ""}`} onClick={() => onNavigate("services")}><i>⌁</i><b>我的服务</b><span>{serviceAlert || (serviceCount === null ? (desktop ? "正在探测服务…" : "桌面版可查看服务") : serviceCount ? `${serviceCount} 项服务运行正常` : "尚未登记服务")}</span><em>查看服务 →</em></button></div></div></section>;
+  return <section className="home"><div className="home-composition"><div className="home-intro"><h1>{greeting.title}</h1></div><div className="home-stack"><button className="space-card" onClick={() => onNavigate("trending")}><i><DesignIcon name="trending"/></i><b>今日热点</b><span>看看开发者们正在关注什么</span><em>查看热点 →</em></button><button className="space-card" onClick={() => onNavigate("tasks")}><i><DesignIcon name="tasks"/></i><b>我的待办</b><span>{pending === null ? (desktop ? "正在读取待办…" : "桌面版可读取待办") : pending ? `${pending} 项待办${todayReminders ? ` · ${todayReminders} 项今天提醒` : ""}` : "暂无待办"}</span><em>打开待办 →</em></button><button className="space-card" onClick={() => onNavigate("inbox")}><i><DesignIcon name="inbox"/></i><b>收件箱</b><span>{!desktop ? "桌面版可查看邮件" : unreadMail === undefined ? "正在读取邮件状态…" : unreadMail > 0 ? `${unreadMail} 封未读邮件` : "查看你的邮件"}</span><em>打开收件箱 →</em></button><button className={`space-card${hasAlert ? " alert" : ""}`} onClick={() => onNavigate("services")}><i><DesignIcon name="services"/></i><b>我的服务</b><span>{serviceAlert || (serviceCount === null ? (desktop ? "正在探测服务…" : "桌面版可查看服务") : serviceCount ? `${serviceCount} 项服务运行正常` : "尚未登记服务")}</span><em>查看服务 →</em></button></div></div></section>;
 }
 
 function DesktopRequired({ desktop }: { desktop: DesktopContext | null }) {
@@ -230,7 +248,7 @@ function nextMinute() { const next = new Date(); next.setSeconds(0, 0); next.set
 function ReminderBadge({task}: {task:ObsidianTask}) {
   const [delivered,setDelivered]=useState(false);
   useEffect(() => { const check=()=> {try { const env=document.querySelector(".development-marker") ? "development" : "production"; const key=`${task.id}|${task.reminderAt}`; const a:unknown=JSON.parse(localStorage.getItem(`northstar.reminders.delivered.v1:${env}`)||"[]"); const b:unknown=JSON.parse(localStorage.getItem(`northstar.reminders.dismissed.v1:${env}`)||"[]"); setDelivered((Array.isArray(a) && a.includes(key)) || (Array.isArray(b) && b.includes(key))); } catch {setDelivered(false);} }; check(); window.addEventListener("northstar-reminders-changed",check); return()=>window.removeEventListener("northstar-reminders-changed",check); },[task.id,task.reminderAt]);
-  return <span className={`task-reminder-badge ${delivered ? "delivered" : "pending"}`} title={`提醒时间：${task.reminderAt?.replace("T"," ")} · ${delivered ? "已提醒" : "尚未提醒"}`} aria-label={`提醒时间 ${task.reminderAt?.replace("T"," ")}，${delivered ? "已提醒" : "尚未提醒"}`}><span aria-hidden="true">🔔</span><i aria-hidden="true">{delivered ? "✓" : "?"}</i></span>;
+  return <span className={`task-reminder-badge ${delivered ? "delivered" : "pending"}`} title={`提醒时间：${task.reminderAt?.replace("T"," ")} · ${delivered ? "已提醒" : "尚未提醒"}`} aria-label={`提醒时间 ${task.reminderAt?.replace("T"," ")}，${delivered ? "已提醒" : "尚未提醒"}`}><DesignIcon name="bell"/><i aria-hidden="true">{delivered ? "✓" : "?"}</i></span>;
 }
 function CompactReminder({value, onChange,onValidityChange}: {value:string; onChange:(value:string)=>void;onValidityChange:(valid:boolean)=>void}) {
   const [open,setOpen]=useState(false);const [manual,setManual]=useState(false);const [draft,setDraft]=useState("");const [error,setError]=useState("");const timer=useRef<number | undefined>(undefined); const anchor=useRef<HTMLDivElement>(null); const [position,setPosition]=useState({left:12,top:12});
@@ -238,7 +256,7 @@ function CompactReminder({value, onChange,onValidityChange}: {value:string; onCh
   useEffect(()=>()=>{if(timer.current)window.clearTimeout(timer.current);},[]);
   const display=value ? `${value.slice(0,4)}年${value.slice(5,7)}月${value.slice(8,10)}日 ${value.slice(11)}:00` : "选择提醒时间";
   const commit=()=> {const match=/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})[ T]+(\d{2}):(\d{2})(?::00)?$/.exec(draft.trim()); if(!match){setError("请输入 YYYY-MM-DD HH:mm");return;} const candidate=`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}`;const parsed=new Date(candidate);if(Number.isNaN(parsed.getTime()) || localDateTime(parsed)!==candidate || candidate<nextMinute()){setError("请选择有效的未来时间");return;}onChange(candidate);onValidityChange(true);setError("");setManual(false);};
-  return <div className="compact-reminder" ref={anchor}>{manual ? <input aria-label="编辑提醒时间" placeholder="YYYY-MM-DD HH:mm" value={draft} onChange={event=>{setDraft(event.target.value);onValidityChange(false);}} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();commit();} if(event.key==="Escape"){setManual(false);setError("");onValidityChange(true);}}} onBlur={commit}/> : <button type="button" aria-label={`提醒时间 ${display}`} aria-expanded={open} onClick={event=>{if(event.detail<=1)timer.current=window.setTimeout(toggle,260);}} onDoubleClick={event=>{event.preventDefault();if(timer.current)window.clearTimeout(timer.current);setOpen(false);setDraft(value.replace("T"," "));setError("");setManual(true);}}>{display}</button>}{error && <small role="alert" className="inline-error">{error}</small>}{open && createPortal(<div className={document.querySelector(".app-shell.night") ? "night" : ""}><ReminderPicker value={value} onChange={onChange} onClose={()=>setOpen(false)} position={position}/></div>,document.body)}</div>;
+  return <div className="compact-reminder" ref={anchor}>{manual ? <input aria-label="编辑提醒时间" placeholder="YYYY-MM-DD HH:mm" value={draft} onChange={event=>{setDraft(event.target.value);onValidityChange(false);}} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();commit();} if(event.key==="Escape"){setManual(false);setError("");onValidityChange(true);}}} onBlur={commit}/> : <button type="button" aria-label={`提醒时间 ${display}`} aria-expanded={open} onClick={event=>{if(event.detail<=1)timer.current=window.setTimeout(toggle,260);}} onDoubleClick={event=>{event.preventDefault();if(timer.current)window.clearTimeout(timer.current);setOpen(false);setDraft(value.replace("T"," "));setError("");setManual(true);}}>{display}</button>}{error && <small role="alert" className="inline-error">{error}</small>}{open && createPortal(<ReminderPicker value={value} onChange={onChange} onClose={()=>setOpen(false)} position={position}/>,document.querySelector(".app-shell") || document.body)}</div>;
 }
 function ReminderPicker({value,onChange,onClose,position}:{value:string;onChange:(value:string)=>void;onClose:()=>void;position:{left:number;top:number}}) {
   const initial=value || nextMinute();const [date,setDate]=useState(initial.slice(0,10));const [time,setTime]=useState(initial.slice(11));const [month,setMonth]=useState(initial.slice(0,7));const [error,setError]=useState("");
