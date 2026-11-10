@@ -132,7 +132,7 @@ function WindowChrome() {
     catch (error) { console.error("窗口操作失败", error); }
   };
   return <>
-    <div className="window-drag-region" data-tauri-drag-region />
+    <div className="window-drag-region" />
     <div className="window-controls" role="group" aria-label="窗口操作">
       <button type="button" aria-label="最小化窗口" title="最小化" onClick={() => void run("minimize")}><DesignIcon name="minimize" /></button>
       <button type="button" aria-label="最大化或还原窗口" title="最大化或还原" onClick={() => void run("toggleMaximize")}><DesignIcon name="maximize" /></button>
